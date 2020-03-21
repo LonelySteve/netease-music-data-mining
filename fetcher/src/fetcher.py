@@ -10,6 +10,7 @@ from typing import Callable, Iterable, Optional, Union
 
 from pyee import AsyncIOEventEmitter
 
+from .exceptions import RefuseHandleError
 from .util import jump_step
 
 _handler_type = Union[Callable[[int, "BaseFetcher"], None], Callable[[int], None]]
@@ -142,7 +143,7 @@ class IndexFetcher(BaseFetcher):
             try:
                 self.emitter.emit("starting", self)
                 self._normal()
-            except (IndexError, OverflowError) as e:
+            except (IndexError, OverflowError, RefuseHandleError) as e:
                 self._current = None
                 self._worked_span = self.span
                 self.emitter.emit("exiting", self, e)
@@ -199,11 +200,11 @@ class IndexFetcher(BaseFetcher):
             i += int(math.copysign(d, sign))
             yield i
 
-    def _back(self, last_unacceptable_value):
+    def _back(self, first_unaccepted_value):
         def overdo(i):
-            # 新迭代出的值越过了跃进时最后一次未被接受的值
-            return (-self.step < 0 and i <= last_unacceptable_value) \
-                   or (-self.step > 0 and i >= last_unacceptable_value)
+            # 新迭代出的值越过了跃进时首次未被接受的值
+            return (-self.step < 0 and i <= first_unaccepted_value) \
+                   or (-self.step > 0 and i >= first_unaccepted_value)
 
         # 回溯一下，保证尽量不遗漏
         with self._anchor() as cur:
@@ -212,7 +213,7 @@ class IndexFetcher(BaseFetcher):
                 # 到达限制跳出循环
                 if counter >= self.jump_step_limit:
                     return
-                # 新迭代出的值越过了跃进时最后一次未被接受的值
+                # 新迭代出的值越过了跃进时首次未被接受的值
                 if overdo(j):
                     return
                 self._set_current(j)
@@ -225,18 +226,14 @@ class IndexFetcher(BaseFetcher):
                     return
 
     def _jump(self, begin):
-        last_unacceptable_value = begin
         # 按 self.step 的符号方向跃进
         for i in self._jumper(begin, self.step):
             self._set_current(i)
             if self.__safe_handle():
                 # 处理成功，需要回溯一下，保证尽量不遗漏
-                self._back(last_unacceptable_value)
+                self._back(begin)
                 # 回溯完毕，停止跃进
                 break
-            else:
-                # 如果未处理成功，继续跃进
-                last_unacceptable_value = i
 
         # 从当前索引+步进偏移 恢复普通步进状态
         self._normal(self.current + self.step)
@@ -247,6 +244,8 @@ class IndexFetcher(BaseFetcher):
             self._handle()
             self.emitter.emit("handled", self)
             return True
+        except RefuseHandleError as e:
+            raise e
         except Exception as e:
             self.emitter.emit("handle_error", self, e)
             return False

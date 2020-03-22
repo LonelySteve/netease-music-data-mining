@@ -33,3 +33,7 @@ class ConfigNotLoadedError(ConfigError):
 
 class RefuseHandleError(Exception):
     """拒绝处理错误，用于处理器中，实现能中断处理方式"""
+
+
+class JobCancelError(Exception):
+    """作业取消错误，用于中断作业执行"""

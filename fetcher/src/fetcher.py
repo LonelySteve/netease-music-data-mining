@@ -1,279 +1,158 @@
 #!/usr/env python3
 import math
+import statistics
+import time
 from abc import ABCMeta
+from concurrent.futures import (Executor, Future, ThreadPoolExecutor,
+                                as_completed, wait)
 from contextlib import contextmanager
+from datetime import datetime, timedelta
 from functools import partial
-from inspect import signature
+from inspect import Parameter, signature
 from itertools import count
 from threading import Thread
-from typing import Callable, Iterable, Optional, Union
+from typing import Callable, Dict, Iterable, List, Optional
 
 from pyee import AsyncIOEventEmitter
 
-from .exceptions import RefuseHandleError
-from .util import jump_step
+from .job import BaseJob, Handlers, IndexJob
+from .span import StepSpan
+from .status import ObserverStatus
+from .util import jump_step, repr_injector
 
-_handler_type = Union[Callable[[int, "BaseFetcher"], None], Callable[[int], None]]
+_executor_factory_type = Optional[Callable[[], Executor]]
 
 
-class BaseFetcher(Thread, metaclass=ABCMeta):
+class BaseFetcher(metaclass=ABCMeta):
     __counter = 0
 
-    def __init__(self, name=None, emitter=None):
-        self._working = False
-        self._handlers = {}
+    def __init__(self, name=None, emitter=None, thread_weights=None, executor_factory: _executor_factory_type = None):
         self.emitter = emitter or AsyncIOEventEmitter()
+        self.thread_weights = self.standardized_thread_weights(thread_weights) or [1]
+        self.executor_factory = executor_factory or (lambda: ThreadPoolExecutor(thread_name_prefix=name))
 
-        super().__init__(name=name or f"{self.__class__.__name__}-{self.__auto_counter()}")
+        self._working = False
+        self._handlers: Dict[Callable[..., None], Parameter] = {}
 
-    @property
-    def working(self):
-        return self._working
+    @staticmethod
+    def standardized_thread_weights(thread_weights):
+        non_positive_weight = next((weight for weight in thread_weights if weight <= 0), None)
+        if non_positive_weight:
+            raise ValueError(f"Non-positive weights are not accepted: {non_positive_weight!r}")
 
-    @contextmanager
-    def _work(self):
-        self._working = True
-        try:
-            yield
-        finally:
-            self._working = False
+        total_value = sum(thread_weights)
 
-    def add_handler(self, handler: _handler_type = None, **kwargs):
-        if handler is None:
-            return partial(self.add_handler, **kwargs)
-
-        handler_sig = signature(handler)
-
-        self._handlers[handler] = handler_sig.parameters
-
-        return handler
-
-    def remove_handler(self, handler: _handler_type):
-        self._handlers.pop(handler, None)
-
-    def clear_handlers(self):
-        self._handlers.clear()
-
-    def __auto_counter(self):
-        counter = self.__counter
-        counter += 1
-        return counter
+        return [weight / total_value for weight in thread_weights]
 
 
-class IndexFetcher(BaseFetcher):
+PENDING = "PENDING"
+RUNNING = "RUNNING"
+STOPPING = "STOPPING"
+STARTING = "STARTING"
+
+
+@repr_injector
+class IndexFetcher(BaseFetcher, StepSpan, ObserverStatus):
 
     def __init__(self, begin: int, end: Optional[int] = None, step: int = 1,
-                 jump_step_func: Callable[[], Iterable[int]] = None, jump_step_limit=3, name=None, emitter=None):
-        if end is None:
-            end = math.copysign(float("inf"), step)
+                 jump_step_func: Callable[[], Iterable[int]] = None, jump_step_limit: int = 3,
+                 name: Optional[str] = None, emitter=None,
+                 thread_weights=None, executor_factory: _executor_factory_type = None):
 
-        if (begin < end and step <= 0) or (begin > end and step >= 0):
-            raise ValueError(
-                f"The value of step ({step}) is not ensure to reach the end.")
-
-        self.begin = begin
-        self.end = end
-        self.step = step
         self.jump_step_func = jump_step_func or jump_step
         self.jump_step_limit = jump_step_limit
+        self.handlers = Handlers()
+        self.status = PENDING
 
-        self._current = None
-        self._worked_span = (None, None)
+        self._contractor_thread = None
+        self._observer_thread = None
+        self._jobs: List[IndexJob] = []
+        self._total_observation_time: Optional[timedelta] = None
+        self._total_observation_index_handle_count: int = 0
+        self._total_observation_index_valid_handle_count: int = 0
+        self._observation_processes = {}
 
-        super().__init__(name=name, emitter=emitter)
-
-    def __eq__(self, other: "IndexFetcher"):
-        if not isinstance(other, IndexFetcher):
-            return False
-        return (self.begin, self.end, self.step) == (other.begin, other.end, other.step)
-
-    def __hash__(self):
-        return hash(self.begin) ^ hash(self.end) ^ hash(self.step)
-
-    def __repr__(self):
-        return f"<IndexSpider span=({self.span[0]} ~ {self.span[1]}) working={self.working}" \
-               f" current={self.current}" \
-               f" step={self.step}" \
-               f" worked_span=({self.worked_span[0]} ~ {self.worked_span[1]})" \
-               f" jump_step_limit={self.jump_step_limit}>"
-
-    def __str__(self):
-        working_flag = "*" if self.working else ""
-        current_field = f" at {self.current}" if self.current else ""
-
-        return f"{working_flag}IndexSpider({self.span[0]} ~ {self.span[1]}, " \
-               f"{float(self.process * 100) :.2F}%){current_field}"
+        BaseFetcher.__init__(self, name=name, emitter=emitter, thread_weights=thread_weights,
+                             executor_factory=executor_factory)
+        StepSpan.__init__(self, begin, end, step)
 
     @property
-    def current(self):
-        return self._current
-
-    @property
-    def span(self):
-        return (self.begin, self.end) if self.begin <= self.end else (self.end, self.begin)
-
-    @property
-    def worked_span(self):
-        return self._worked_span
-
-    @property
-    def process(self):
-        """获取当前工作进度（0~1 之间的浮点数表示）"""
-        if self._worked_span[0] is None or self._worked_span[1] is None:
+    def average_speed(self) -> float:
+        if self._total_observation_time is None:
             return 0
-        return (self._worked_span[1] - self._worked_span[0]) / (self.span[1] - self.span[0])
+        return self._total_observation_index_handle_count / self._total_observation_time.seconds
 
-    def add_handler(self, handler: _handler_type = None, **kwargs):
-        if handler is None:
-            return partial(self.add_handler, **kwargs)
+    @property
+    def assumed_time_remaining(self) -> Optional[timedelta]:
+        if self._total_observation_time is None:
+            return None
+        # TODO WIP
+        return 
 
-        handler_sig = signature(handler)
-        if len(handler_sig.parameters) not in (1, 2):
-            raise ValueError("handler's signature should have at least one parameter, "
-                             "less than or equal to two parameters.")
-        super().add_handler(handler, **kwargs)
+    @property
+    def process(self) -> float:
+        return statistics.mean(job.process for job in self._jobs)
 
-    def reverse(self):
-        self.step = - self.step
-        return self
+    def start(self, timeout=None):
+        if self._contractor_thread is not None and self._contractor_thread.is_alive():
+            raise RuntimeError("The current jobs is not finished and cannot be started again.")
 
-    def run(self):
-        self._worked_span = (None, None)
-        with self._work():
-            try:
-                self.emitter.emit("starting", self)
-                self._normal()
-            except (IndexError, OverflowError, RefuseHandleError) as e:
-                self._current = None
-                self._worked_span = self.span
-                self.emitter.emit("exiting", self, e)
+        self.status = STARTING
 
-    @contextmanager
-    def _anchor(self):
-        current = self.current
-        try:
-            yield current
-        finally:
-            self._set_current(current)
+        self._contractor_thread = Thread(target=self._start, kwargs={"timeout": timeout}, name="contractor_thread")
+        self._contractor_thread.daemon = True
+        self._contractor_thread.start()
 
-    @contextmanager
-    def list(self, handler: _handler_type = None, only_index=True, record_valid_data=True):
-        result = []
+        # 等待上一次的观察者线程退出
+        while self._total_observation_time is not None:
+            ...
+        self.status = RUNNING
+        # 开启新的观察者线程
+        self._observer_thread = Thread(target=self._observer, name="observer_thread")
+        self._observer_thread.daemon = True
+        self._observer_thread.start()
 
-        @self.add_handler
-        def _collector_(i, fetcher_):
-            if not record_valid_data:
-                result.append(i if only_index else (i, fetcher_))
-            handler and handler(i)
-            if record_valid_data:
-                result.append(i if only_index else (i, fetcher_))
+    def stop(self):
+        for job in self._jobs:
+            job.cancel()
 
-        # 启动 fetcher，等待以搜集全部结果
-        self.start()
-        self.join()
-        yield result
-        self.remove_handler(_collector_)
+    def job_iter(self):
+        begin: int = self.begin
+        for i, weight in enumerate(self.thread_weights):
+            job_len = math.ceil(len(self) * weight)
+            end = begin + job_len - 1
+            yield self._job_factory(begin, end)
+            begin = end + self.step
 
-    def _normal(self, begin=None, step=None, rejected_handler: Optional[Callable[[int], Optional[bool]]] = None,
-                prioritized_break_condition: Optional[Callable[[int], bool]] = None):
+    def _start(self, timeout=None):
+        self._jobs.clear()
+        self.emitter.emit("start_all")
+        with self.executor_factory() as executor:
+            for job in self.job_iter():
+                self._jobs.append(job)
+                self._job_futures.append(executor.submit(job))
+            wait(self._job_futures, timeout=timeout)
+        self.emitter.emit("all_completed")
 
-        begin = begin or self.begin
-        step = step or self.step
-        rejected_handler = rejected_handler or (
-            lambda i_: self._jump(i_) or True)
+    def _observer(self):
+        start_time = datetime.now()
+        while self.status == RUNNING:
+            self._total_observation_time = datetime.now() - start_time
+            time.sleep(1)
+        self._total_observation_index_handle_count = 0
+        self._total_observation_index_valid_handle_count = 0
+        self._total_observation_time = None
 
-        if step == 0:
-            self._set_current(begin)
-            self.__safe_handle()
-        else:
-            for i in count(begin, step):
-                self._set_current(i)
-                if prioritized_break_condition and prioritized_break_condition(i):
-                    break
-                if not self.__safe_handle():
-                    if rejected_handler(i):
-                        break
+    def _watch_total_index_handle_count(self, sender: IndexJob):
+        self._total_observation_index_handle_count += 1
 
-    def _jumper(self, begin, sign):
-        i = begin
-        for d in self.jump_step_func():
-            i += int(math.copysign(d, sign))
-            yield i
+    def _watch_total_index_valid_handle_count(self, sender: IndexJob):
+        self._total_observation_index_valid_handle_count += 1
 
-    def _back(self, first_unaccepted_value):
-        def overdo(i):
-            # 新迭代出的值越过了跃进时首次未被接受的值
-            return (-self.step < 0 and i <= first_unaccepted_value) \
-                   or (-self.step > 0 and i >= first_unaccepted_value)
-
-        # 回溯一下，保证尽量不遗漏
-        with self._anchor() as cur:
-            # 回溯之前也需要通过反向跃进跳过不被接受的索引值
-            for counter, j in enumerate(self._jumper(cur, -self.step)):
-                # 到达限制跳出循环
-                if counter >= self.jump_step_limit:
-                    return
-                # 新迭代出的值越过了跃进时首次未被接受的值
-                if overdo(j):
-                    return
-                self._set_current(j)
-                # 出现能接受的索引值，开始回溯
-                if self.__safe_handle():
-                    # 开始回溯操作，再次被拒绝则不再处理
-                    self._normal(self.current - self.step, -self.step,
-                                 rejected_handler=lambda i_: True,
-                                 prioritized_break_condition=lambda i_: overdo(i_))
-                    return
-
-    def _jump(self, begin):
-        # 按 self.step 的符号方向跃进
-        for i in self._jumper(begin, self.step):
-            self._set_current(i)
-            if self.__safe_handle():
-                # 处理成功，需要回溯一下，保证尽量不遗漏
-                self._back(begin)
-                # 回溯完毕，停止跃进
-                break
-
-        # 从当前索引+步进偏移 恢复普通步进状态
-        self._normal(self.current + self.step)
-
-    def __safe_handle(self):
-        try:
-            self.emitter.emit("handling", self)
-            self._handle()
-            self.emitter.emit("handled", self)
-            return True
-        except RefuseHandleError as e:
-            raise e
-        except Exception as e:
-            self.emitter.emit("handle_error", self, e)
-            return False
-
-    def _handle(self):
-        for handler, params in self._handlers.items():
-            if len(params) == 1:
-                handler(self.current)
-            elif len(params) == 2:
-                handler(self.current, self)
-
-    def _in_span(self, i):
-        span_l, span_r = self._worked_span
-        if span_l is None or span_r is None:
-            return False
-        return span_l <= i <= span_r
-
-    def _set_span(self, i):
-        if i < self.span[0] or self.span[1] < i:
-            raise IndexError(i)
-
-        span_l, span_r = self._worked_span
-        if span_l is None or span_r is None:
-            self._worked_span = (i, i)
-        else:
-            self._worked_span = (min(span_l, i), max(i, span_r))
-
-    def _set_current(self, i):
-        i = int(i)
-        self._set_span(i)
-        self._current = i
+    def _job_factory(self, begin, end):
+        job = IndexJob(begin, end, self.step, self.jump_step_func,
+                       self.jump_step_limit, self.emitter)
+        job.handlers = Handlers(self.handlers)
+        job.emitter.on("handling", self._watch_total_index_handle_count)
+        job.emitter.on("handled", self._watch_total_index_valid_handle_count)
+        return job

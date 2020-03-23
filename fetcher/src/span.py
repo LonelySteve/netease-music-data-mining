@@ -2,7 +2,7 @@
 import math
 from typing import Optional, Union
 
-from src.status import Status
+from src.status import IStatus
 
 from .util import repr_injector
 
@@ -67,7 +67,7 @@ class StepSpan(Span):
         return StepSpan(self.begin, self.end, self.step)
 
 
-class WorkSpan(StepSpan, Status):
+class WorkSpan(StepSpan, IStatus):
 
     def __init__(self, begin: int, end: Optional[int] = None, step: int = 1):
         self._worked_span: Optional[Span] = None

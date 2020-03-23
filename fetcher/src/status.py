@@ -1,11 +1,11 @@
 #!/usr/env python3
 from abc import ABCMeta, abstractmethod
 from datetime import timedelta
-from enum import Flag, IntFlag, unique
-from typing import Callable, Optional, Union
+from enum import IntFlag, unique
+from typing import Optional
 
 
-class Status(metaclass=ABCMeta):
+class IStatus(metaclass=ABCMeta):
 
     @property
     @abstractmethod
@@ -13,7 +13,7 @@ class Status(metaclass=ABCMeta):
         """当前进度（以浮点数表示，范围 0~1）"""
 
 
-class ObserverStatus(Status):
+class IWatcherStatus(IStatus):
     @property
     @abstractmethod
     def average_speed(self) -> float:

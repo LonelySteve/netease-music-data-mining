@@ -2,6 +2,7 @@
 import math
 from abc import ABCMeta
 from contextlib import contextmanager
+from copy import copy
 from functools import partial
 from inspect import signature
 from itertools import count
@@ -53,7 +54,7 @@ class BaseJob(metaclass=ABCMeta):
 
     @property
     def working(self):
-        return self.status & StatusFlag.running
+        return bool(self.status & StatusFlag.running)
 
     @property
     def status(self):
@@ -181,9 +182,7 @@ class IndexJob(BaseJob, WorkSpan):
         self._status &= StatusFlag.stepping
         # NOTE 不需要手动反转以恢复方向，下面恢复断点的过程会重置方向
         # 恢复断点
-        self.job_span.begin = self._break_point_span.begin
-        self.job_span.end = self._break_point_span.end
-        self.job_span.step = self._break_point_span.step
+        self.job_span = copy(self._break_point_span)
         self._current = self._break_point_current + self.job_span.step
 
     def _prepare_leaping(self):
@@ -200,7 +199,7 @@ class IndexJob(BaseJob, WorkSpan):
     def _prepare_reverse_leaping(self):
         # ===============为「反向跃进」状态做准备（「跃进」->「反向跃进」）====================
         # 保存断点
-        self._break_point_span = StepSpan(self.job_span.begin, self.job_span.end, self.job_span.step)
+        self._break_point_span = copy(self.job_span)
         self._break_point_current = self._current
 
         # 步伐反向

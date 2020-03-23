@@ -28,6 +28,9 @@ class Span(object):
     def __len__(self):
         return self.max_val - self.min_val + 1
 
+    def __copy__(self):
+        return Span(self.begin, self.end)
+
     @property
     def min_val(self):
         return min(self.begin, self.end)
@@ -60,6 +63,9 @@ class StepSpan(Span):
     def __hash__(self):
         return hash(self.begin) ^ hash(self.end) ^ hash(self.step)
 
+    def __copy__(self):
+        return StepSpan(self.begin, self.end, self.step)
+
 
 class WorkSpan(StepSpan, Status):
 
@@ -77,6 +83,9 @@ class WorkSpan(StepSpan, Status):
 
     def __hash__(self):
         return hash(self.begin) ^ hash(self.end) ^ hash(self.step) ^ hash(self.worked_span) ^ hash(self.current)
+
+    def __copy__(self):
+        return WorkSpan(self.begin, self.end, self.step)
 
     @property
     def worked_span(self):

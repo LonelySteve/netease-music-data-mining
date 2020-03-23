@@ -1,11 +1,13 @@
 #!/usr/env python3
 import math
-from datetime import timedelta
 from typing import Optional, Union
 
 from src.status import Status
 
+from .util import repr_injector
 
+
+@repr_injector
 class Span(object):
     def __init__(self, begin: int, end: Union[int, float]):
         # 如果 end 不是无穷大，则对其取整
@@ -86,6 +88,8 @@ class WorkSpan(StepSpan, Status):
 
     @property
     def process(self) -> float:
+        if self.worked_span is None:
+            return 0
         return len(self.worked_span) / len(self)
 
     def _update_worked_span(self, i):

@@ -1,15 +1,16 @@
 #!/usr/env python3
 import math
 
-from src.fetcher import IndexFetcher
 import pytest
+
+from src.job import IndexJob
 
 
 def test_instantiate():
-    IndexFetcher(1, 100, 1)
-    IndexFetcher(100, 1, -1)
+    IndexJob(1, 100, 1)
+    IndexJob(100, 1, -1)
     with pytest.raises(ValueError):
-        IndexFetcher(1, 100, -1)
+        IndexJob(1, 100, -1)
 
 
 @pytest.mark.parametrize("begin, end, step", [
@@ -19,9 +20,9 @@ def test_instantiate():
     (-1, -100, -2), (-100, -1, 2),
 ])
 def test_general(begin, end, step):
-    fetcher = IndexFetcher(begin, end, step)
-    # fetcher 的范围是 [begin, end]，故 range 对应的范围是 [begin, int(end + math.copysign(1, step)))
-    with fetcher.list() as result:
+    job = IndexJob(begin, end, step)
+    # job 的范围是 [begin, end]，故 range 对应的范围是 [begin, int(end + math.copysign(1, step)))
+    with job.list() as result:
         assert result == list(range(begin, int(end + math.copysign(1, step)), step))
 
 
@@ -39,10 +40,15 @@ def test_general(begin, end, step):
     (20, 1, -2, [18, 17, 16, 14, 12], [20, 8, 9, 11, 13, 15, 6, 4, 2])
 ])
 def test_jump_back(begin, end, step, mock_invalid_values, emitted_values):
-    fetcher = IndexFetcher(begin, end, step)
+    job = IndexJob(begin, end, step)
 
     def assertion_conditions(i):
         assert i not in mock_invalid_values
 
-    with fetcher.list(assertion_conditions) as result:
+    with job.list(assertion_conditions) as result:
         assert result == emitted_values
+
+
+def test_repr():
+    job = IndexJob(1, 100, 1)
+    repr(job)

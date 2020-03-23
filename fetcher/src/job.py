@@ -1,5 +1,6 @@
 #!/usr/env python3
 import math
+from abc import ABCMeta
 from contextlib import contextmanager
 from functools import partial
 from inspect import signature
@@ -9,76 +10,89 @@ from typing import Callable, Iterable, Optional, Union
 from pyee import AsyncIOEventEmitter
 
 from .exceptions import JobCancelError, RefuseHandleError
-from .span import WorkSpan
+from .span import StepSpan, WorkSpan
+from .status import StatusFlag
 from .util import jump_step, repr_injector
 
 _handler_type = Union[Callable[[int, "BaseJob"], None], Callable[[int], None]]
 
 
-class Handlers(dict):
+class Handlers(object):
+    def __init__(self, handlers=None):
+        if isinstance(handlers, Handlers):
+            self._data = handlers._data.copy()
+        else:
+            self._data = handlers or {}
+
     def add(self, handler: _handler_type = None, **kwargs):
         if handler is None:
             return partial(self.add, **kwargs)
 
         handler_sig = signature(handler)
 
-        self[handler] = handler_sig.parameters
+        self._data[handler] = handler_sig.parameters
 
         return handler
 
+    def items(self):
+        return self._data.items()
 
-class BaseJob(object):
-    def __init__(self, emitter=None):
-        self.handlers = Handlers()
-        self.emitter = emitter or AsyncIOEventEmitter()
+    def clear(self):
+        return self._data.clear()
 
-        self._working = False
-        self._cancel = False
-
-    @property
-    def working(self):
-        return self._working
-
-    @contextmanager
-    def _work(self):
-        self._working = True
-        try:
-            yield
-        finally:
-            self._working = False
-
-    def _try_cancel(self):
-        if self._cancel:
-            raise JobCancelError
-
-    def cancel(self):
-        self._cancel = True
+    def pop(self, k):
+        return self._data.pop(k)
 
 
 @repr_injector
+class BaseJob(metaclass=ABCMeta):
+    def __init__(self, emitter=None, status: StatusFlag = None):
+        self.handlers = Handlers()
+        self.emitter = emitter or AsyncIOEventEmitter()
+        self._status: StatusFlag = status or 0
+
+    @property
+    def working(self):
+        return self.status & StatusFlag.running
+
+    @property
+    def status(self):
+        return self._status
+
+    @contextmanager
+    def _work(self):
+        self._status |= StatusFlag.running
+        try:
+            yield
+        finally:
+            self._status |= StatusFlag.stopping
+            # 给状态 stopping 标志后，需要取消 running 标志
+            self._status &= ~StatusFlag.running
+
+    def cancel(self):
+        self._status |= StatusFlag.canceling
+
+    def _try_cancel(self):
+        if self.status & StatusFlag.canceling:
+            raise JobCancelError
+
+
 class IndexJob(BaseJob, WorkSpan):
     def __init__(self, begin: int, end: Optional[int] = None, step: int = 1,
-                 jump_step_func: Callable[[], Iterable[int]] = None, jump_step_limit=3, emitter=None):
+                 jump_step_func: Callable[[], Iterable[int]] = None, emitter=None):
 
         self.jump_step_func = jump_step_func or jump_step
-        self.jump_step_limit = jump_step_limit
+        self.job_span = StepSpan(begin, end, step)
+
+        self._break_point_span: Optional[StepSpan] = None
+        self._break_point_current: Optional[int] = None
+        self._reverse_leaping_first_unaccepted_value: Optional[int] = None
 
         BaseJob.__init__(self, emitter=emitter)
         WorkSpan.__init__(self, begin, end, step)
 
     def __call__(self, *args, **kwargs):
         return self.run()
-
-    def run(self):
-        self._worked_span = None
-        with self._work():
-            try:
-                self.emitter.emit("starting", self)
-                self._normal()
-            except (IndexError, OverflowError, RefuseHandleError, JobCancelError) as e:
-                self._current = None
-                self._worked_span = self
-                self.emitter.emit("exiting", self, e)
 
     @contextmanager
     def list(self, handler: _handler_type = None, only_index=True, record_valid_data=True):
@@ -104,70 +118,130 @@ class IndexJob(BaseJob, WorkSpan):
         finally:
             self._set_current(current)
 
+    def run(self):
+        self._worked_span = None
+        with self._work():
+            err = None
+            try:
+                self.emitter.emit("starting", self)
+                self._current = self.job_span.begin
+                self._status &= StatusFlag.stepping
+
+                while True:
+                    # -1 的二进制即全为 1，相或的结果为 -1 说明相应位的值为 1，这里我期望相应的位是 0，因此判断是否不等于 -1
+                    if self.status | StatusFlag.stepping != -1:
+                        self._handle_stepping()
+                    elif self.status & StatusFlag.leaping:
+                        self._handle_leaping()
+            except IndexError as e:
+                err = e
+            except JobCancelError as e:
+                err = e
+                self._status |= StatusFlag.stopping_with_canceled
+                self._status &= ~StatusFlag.canceling
+            except Exception as e:
+                err = e
+                self._status |= StatusFlag.stopping_with_exception
+            finally:
+                self._break_point_span = None
+                self._break_point_current = None
+                self._reverse_leaping_first_unaccepted_value = None
+                self.emitter.emit("exiting", self, err)
+
     def _jumper(self, begin, sign):
         i = begin
         for d in self.jump_step_func():
             i += int(math.copysign(d, sign))
             yield i
 
-    def _normal(self, begin=None, step=None, rejected_handler: Optional[Callable[[int], Optional[bool]]] = None,
-                prioritized_break_condition: Optional[Callable[[int], bool]] = None):
-        begin = begin or self.begin
-        step = step or self.step
-        rejected_handler = rejected_handler or (lambda i_: self._jump(i_) or True)
-
-        if step == 0:
-            self._set_current(begin)
+    def _step(self):
+        if self.job_span.step == 0:
+            self._set_current(self.job_span.begin)
             self.__safe_handle()
-        else:
-            for i in count(begin, step):
-                self._try_cancel()
-                self._set_current(i)
-                if prioritized_break_condition and prioritized_break_condition(i):
-                    break
-                if not self.__safe_handle():
-                    if rejected_handler(i):
-                        break
+            return
 
-    def _back(self, first_unaccepted_value):
-        def overdo(i):
-            # 新迭代出的值越过了跃进时首次未被接受的值
-            return (-self.step < 0 and i <= first_unaccepted_value) \
-                   or (-self.step > 0 and i >= first_unaccepted_value)
+        for i in count(self.current, self.job_span.step):
+            self._try_cancel()
+            self._set_current(i)
+            if not self.__safe_handle():
+                break
 
-        # 回溯一下，保证尽量不遗漏
-        with self._anchor() as cur:
-            # 回溯之前也需要通过反向跃进跳过不被接受的索引值
-            for counter, j in enumerate(self._jumper(cur, -self.step)):
-                self._try_cancel()
-                # 到达限制跳出循环
-                if counter >= self.jump_step_limit:
-                    return
-                # 新迭代出的值越过了跃进时首次未被接受的值
-                if overdo(j):
-                    return
-                self._set_current(j)
-                # 出现能接受的索引值，开始回溯
-                if self.__safe_handle():
-                    # 开始回溯操作，再次被拒绝则不再处理
-                    self._normal(self.current - self.step, -self.step,
-                                 rejected_handler=lambda i_: True,
-                                 prioritized_break_condition=lambda i_: overdo(i_))
-                    return
-
-    def _jump(self, begin):
-        # 按 self.step 的符号方向跃进
-        for i in self._jumper(begin, self.step):
+    def _leap(self):
+        for i in self._jumper(self.current, self.job_span.step):
             self._try_cancel()
             self._set_current(i)
             if self.__safe_handle():
-                # 处理成功，需要回溯一下，保证尽量不遗漏
-                self._back(begin)
-                # 回溯完毕，停止跃进
                 break
 
-        # 从当前索引+步进偏移 恢复普通步进状态
-        self._normal(self.current + self.step)
+    def _prepare_stepping(self):
+        # ===============为「步进」状态做准备（「反向步进/反向跃进」->「步进」）====================
+        # 取消反转标志位
+        self._status &= ~StatusFlag.reverse
+        # 设置步进状态标志位
+        self._status &= StatusFlag.stepping
+        # NOTE 不需要手动反转以恢复方向，下面恢复断点的过程会重置方向
+        # 恢复断点
+        self.job_span.begin = self._break_point_span.begin
+        self.job_span.end = self._break_point_span.end
+        self.job_span.step = self._break_point_span.step
+        self._current = self._break_point_current + self.job_span.step
+
+    def _prepare_leaping(self):
+        # ===============为「跃进」状态做准备（「步进」->「跃进」）====================
+        self._reverse_leaping_first_unaccepted_value = self._current
+
+        self._status |= StatusFlag.leaping
+
+    def _prepare_reverse_stepping(self):
+        # ===============为「反向步进」状态做准备（「反向跃进」->「反向步进」）====================
+        self._status &= StatusFlag.stepping
+        self._current += self.job_span.step
+
+    def _prepare_reverse_leaping(self):
+        # ===============为「反向跃进」状态做准备（「跃进」->「反向跃进」）====================
+        # 保存断点
+        self._break_point_span = StepSpan(self.job_span.begin, self.job_span.end, self.job_span.step)
+        self._break_point_current = self._current
+
+        # 步伐反向
+        self.job_span.step = - self.job_span.step
+        self.job_span.begin = self._current
+        self.job_span.end = self._reverse_leaping_first_unaccepted_value
+
+        self._status |= StatusFlag.reverse
+
+    def _handle_stepping(self):
+        # 断言步进状态
+        assert self.status | StatusFlag.stepping != -1
+
+        try:
+            self._step()
+        except IndexError:
+            if not (self.status & StatusFlag.reverse):
+                raise
+
+        # 相与结果非零即为具有该标志位
+        if self.status & StatusFlag.reverse:
+            self._prepare_stepping()
+        else:
+            self._prepare_leaping()
+
+    def _handle_leaping(self):
+        # 断言跃进状态
+        assert self.status & StatusFlag.leaping
+
+        try:
+            self._leap()
+        except IndexError:
+            if not (self.status & StatusFlag.reverse):
+                raise
+            self._prepare_stepping()
+            return
+
+        if self.status & StatusFlag.reverse:
+            self._prepare_reverse_stepping()
+        else:
+            self._prepare_reverse_leaping()
 
     def __safe_handle(self):
         try:

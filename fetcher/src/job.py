@@ -1,6 +1,6 @@
 #!/usr/env python3
 import math
-from abc import ABCMeta
+from abc import ABCMeta, abstractmethod
 from contextlib import contextmanager
 from copy import copy
 from functools import partial
@@ -52,6 +52,9 @@ class BaseJob(metaclass=ABCMeta):
         self.emitter = emitter or AsyncIOEventEmitter()
         self._status: StatusFlag = status or 0
 
+    def __call__(self, *args, **kwargs):
+        return self.run()
+
     @property
     def working(self):
         return bool(self.status & StatusFlag.running)
@@ -60,8 +63,15 @@ class BaseJob(metaclass=ABCMeta):
     def status(self):
         return self._status
 
+    @abstractmethod
+    def run(self):
+        """运行任务，此方式是同步的"""
+
     @contextmanager
     def _work(self):
+        # 检查是否已结束，如果已为结束状态则不可再次启动工作
+        if self.status & StatusFlag.stopping:
+            raise RuntimeError("Cannot start a stopped job again!")
         self._status |= StatusFlag.running
         try:
             yield
@@ -92,9 +102,6 @@ class IndexJob(BaseJob, WorkSpan):
         BaseJob.__init__(self, emitter=emitter)
         WorkSpan.__init__(self, begin, end, step)
 
-    def __call__(self, *args, **kwargs):
-        return self.run()
-
     @contextmanager
     def list(self, handler: _handler_type = None, only_index=True, record_valid_data=True):
         result = []
@@ -124,12 +131,22 @@ class IndexJob(BaseJob, WorkSpan):
         with self._work():
             err = None
             try:
-                self.emitter.emit("starting", self)
+                self.emitter.emit("IndexJob.running")
                 self._current = self.job_span.begin
                 self._status &= StatusFlag.stepping
-
+                # 循环处理，下面是步骤简化图：
+                #
+                # 步进 ---> 跃进
+                #  ^ ^      |
+                #  |  \     |
+                #  |   \    |
+                #  |    \   |
+                #  |     \  v
+                # 反向步进<--反向跃进
+                #
                 while True:
-                    # -1 的二进制即全为 1，相或的结果为 -1 说明相应位的值为 1，这里我期望相应的位是 0，因此判断是否不等于 -1
+                    self.emitter.emit("IndexJob.step_switch", self)
+
                     if self.status | StatusFlag.stepping != -1:
                         self._handle_stepping()
                     elif self.status & StatusFlag.leaping:
@@ -147,7 +164,7 @@ class IndexJob(BaseJob, WorkSpan):
                 self._break_point_span = None
                 self._break_point_current = None
                 self._reverse_leaping_first_unaccepted_value = None
-                self.emitter.emit("exiting", self, err)
+                self.emitter.emit("IndexJob.stopped", self, err)
 
     def _jumper(self, begin, sign):
         i = begin
@@ -244,14 +261,14 @@ class IndexJob(BaseJob, WorkSpan):
 
     def __safe_handle(self):
         try:
-            self.emitter.emit("handling", self)
+            self.emitter.emit("IndexJob.handling", self)
             self._handle()
-            self.emitter.emit("handled", self)
+            self.emitter.emit("IndexJob.handled", self)
             return True
         except RefuseHandleError as e:
             raise e
         except Exception as e:
-            self.emitter.emit("handle_error", self, e)
+            self.emitter.emit("IndexJob.handle_error", self, e)
             return False
 
     def _handle(self):

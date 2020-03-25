@@ -11,8 +11,9 @@ from typing import Callable, Iterable, Optional, Union
 from pyee import AsyncIOEventEmitter
 
 from .exceptions import JobCancelError, RefuseHandleError
+from .flag import JobStepFlag
 from .span import StepSpan, WorkSpan
-from .status import StatusFlag
+
 from .util import jump_step, repr_injector
 
 _handler_type = Union[Callable[[int, "BaseJob"], None], Callable[[int], None]]
@@ -47,21 +48,21 @@ class Handlers(object):
 
 @repr_injector
 class BaseJob(metaclass=ABCMeta):
-    def __init__(self, emitter=None, status: StatusFlag = None):
+    def __init__(self, emitter=None, flag: Optional[JobStepFlag] = None):
         self.handlers = Handlers()
         self.emitter = emitter or AsyncIOEventEmitter()
-        self._status: StatusFlag = status or 0
+        self._flag: JobStepFlag = flag or JobStepFlag(JobStepFlag.pending)
 
     def __call__(self, *args, **kwargs):
         return self.run()
 
     @property
     def working(self):
-        return bool(self.status & StatusFlag.running)
+        return JobStepFlag.running in self.flag
 
     @property
-    def status(self):
-        return self._status
+    def flag(self):
+        return self._flag
 
     @abstractmethod
     def run(self):
@@ -70,21 +71,22 @@ class BaseJob(metaclass=ABCMeta):
     @contextmanager
     def _work(self):
         # 检查是否已结束，如果已为结束状态则不可再次启动工作
-        if self.status & StatusFlag.stopping:
+        if JobStepFlag.stopping in self.flag:
             raise RuntimeError("Cannot start a stopped job again!")
-        self._status |= StatusFlag.running
+        self._flag -= JobStepFlag.pending
+        self._flag += JobStepFlag.running
         try:
             yield
         finally:
-            self._status |= StatusFlag.stopping
-            # 给状态 stopping 标志后，需要取消 running 标志
-            self._status &= ~StatusFlag.running
+            # 先取消 running 标志，再置 stopping 标志后
+            self._flag -= JobStepFlag.running
+            self._flag += JobStepFlag.stopping
 
     def cancel(self):
-        self._status |= StatusFlag.canceling
+        self._flag += JobStepFlag.canceling
 
     def _try_cancel(self):
-        if self.status & StatusFlag.canceling:
+        if JobStepFlag.canceling in self.flag:
             raise JobCancelError
 
 
@@ -133,7 +135,7 @@ class IndexJob(BaseJob, WorkSpan):
             try:
                 self.emitter.emit("IndexJob.running")
                 self._current = self.job_span.begin
-                self._status &= StatusFlag.stepping
+                self._flag += JobStepFlag.stepping
                 # 循环处理，下面是步骤简化图：
                 #
                 # 步进 ---> 跃进
@@ -147,19 +149,21 @@ class IndexJob(BaseJob, WorkSpan):
                 while True:
                     self.emitter.emit("IndexJob.step_switch", self)
 
-                    if self.status | StatusFlag.stepping != -1:
+                    if JobStepFlag.stepping in self.flag:
                         self._handle_stepping()
-                    elif self.status & StatusFlag.leaping:
+                    elif JobStepFlag.leaping in self.flag:
                         self._handle_leaping()
             except IndexError as e:
                 err = e
             except JobCancelError as e:
                 err = e
-                self._status |= StatusFlag.stopping_with_canceled
-                self._status &= ~StatusFlag.canceling
+                self._flag -= JobStepFlag.running
+                self._flag += JobStepFlag.stopping_with_canceled
+                self._flag -= JobStepFlag.canceling
             except Exception as e:
                 err = e
-                self._status |= StatusFlag.stopping_with_exception
+                self._flag -= JobStepFlag.running
+                self._flag += JobStepFlag.stopping_with_exception
             finally:
                 self._break_point_span = None
                 self._break_point_current = None
@@ -194,9 +198,11 @@ class IndexJob(BaseJob, WorkSpan):
     def _prepare_stepping(self):
         # ===============为「步进」状态做准备（「反向步进/反向跃进」->「步进」）====================
         # 取消反转标志位
-        self._status &= ~StatusFlag.reverse
+        self._flag -= JobStepFlag.reverse
+        # 取消有可能存在的跃进标志
+        self._flag -= JobStepFlag.leaping
         # 设置步进状态标志位
-        self._status &= StatusFlag.stepping
+        self._flag += JobStepFlag.stepping
         # NOTE 不需要手动反转以恢复方向，下面恢复断点的过程会重置方向
         # 恢复断点
         self.job_span = copy(self._break_point_span)
@@ -205,12 +211,13 @@ class IndexJob(BaseJob, WorkSpan):
     def _prepare_leaping(self):
         # ===============为「跃进」状态做准备（「步进」->「跃进」）====================
         self._reverse_leaping_first_unaccepted_value = self._current
-
-        self._status |= StatusFlag.leaping
+        self._flag -= JobStepFlag.stepping
+        self._flag += JobStepFlag.leaping
 
     def _prepare_reverse_stepping(self):
         # ===============为「反向步进」状态做准备（「反向跃进」->「反向步进」）====================
-        self._status &= StatusFlag.stepping
+        self._flag -= JobStepFlag.leaping
+        self._flag += JobStepFlag.stepping
         self._current += self.job_span.step
 
     def _prepare_reverse_leaping(self):
@@ -224,37 +231,37 @@ class IndexJob(BaseJob, WorkSpan):
         self.job_span.begin = self._current
         self.job_span.end = self._reverse_leaping_first_unaccepted_value
 
-        self._status |= StatusFlag.reverse
+        self._flag += JobStepFlag.reverse
 
     def _handle_stepping(self):
         # 断言步进状态
-        assert self.status | StatusFlag.stepping != -1
+        assert JobStepFlag.stepping in self.flag
 
         try:
             self._step()
         except IndexError:
-            if not (self.status & StatusFlag.reverse):
+            if JobStepFlag.reverse not in self.flag:
                 raise
 
         # 相与结果非零即为具有该标志位
-        if self.status & StatusFlag.reverse:
+        if JobStepFlag.reverse in self.flag:
             self._prepare_stepping()
         else:
             self._prepare_leaping()
 
     def _handle_leaping(self):
         # 断言跃进状态
-        assert self.status & StatusFlag.leaping
+        assert JobStepFlag.leaping in self.flag
 
         try:
             self._leap()
         except IndexError:
-            if not (self.status & StatusFlag.reverse):
+            if JobStepFlag.reverse not in self.flag:
                 raise
             self._prepare_stepping()
             return
 
-        if self.status & StatusFlag.reverse:
+        if JobStepFlag.reverse in self.flag:
             self._prepare_reverse_stepping()
         else:
             self._prepare_reverse_leaping()

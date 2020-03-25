@@ -44,9 +44,9 @@ class Span(object):
 
 
 class StepSpan(Span):
-    def __init__(self, begin: int, end: Optional[int] = None, step: int = 1):
+    def __init__(self, begin: int, end: Optional[Union[int, float]] = None, step: int = 1):
         if end is None:
-            end = int(math.copysign(float("inf"), step))
+            end = math.copysign(float("inf"), step)
 
         if (begin < end and step <= 0) or (begin > end and step >= 0):
             raise ValueError(

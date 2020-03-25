@@ -31,11 +31,19 @@ def repr_injector(cls=None, filter_: Callable[[str, Any], bool] = None, format_d
         lambda k, v: not k.startswith("_") and not any(is_(v) for is_ in [isgenerator, isfunction, ismethod])
     )
 
+    def safe_get_value(obj, key):
+        try:
+            result = getattr(obj, key)
+        except Exception as e:
+            return e
+        return result
+
     def __repr__(self):
-        display_attr_names = [key for key in dir(self) if filter_(key, getattr(self, key))]
+
+        display_attr_names = [key for key in dir(self) if filter_(key, safe_get_value(self, key))]
 
         attr_display_units = [
-            f"{key}={format_dict.get(getattr(self, key), lambda v: '%r' % v)(getattr(self, key))}"
+            f"{key}={format_dict.get(key, lambda v: '%r' % v)(safe_get_value(self, key))}"
             for key in display_attr_names
         ]
 

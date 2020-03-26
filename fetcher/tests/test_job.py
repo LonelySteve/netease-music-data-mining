@@ -23,7 +23,8 @@ def test_general(begin, end, step):
     job = IndexJob(begin, end, step)
     # job 的范围是 [begin, end]，故 range 对应的范围是 [begin, int(end + math.copysign(1, step)))
     with job.list() as result:
-        assert result == list(range(begin, int(end + math.copysign(1, step)), step))
+        if result != list(range(begin, int(end + math.copysign(1, step)), step)):
+            raise ValueError
 
 
 @pytest.mark.parametrize("begin, end, step, mock_invalid_values, emitted_values", [
@@ -43,7 +44,8 @@ def test_jump_back(begin, end, step, mock_invalid_values, emitted_values):
     job = IndexJob(begin, end, step)
 
     def assertion_conditions(i):
-        assert i not in mock_invalid_values
+        if i in mock_invalid_values:
+            raise ValueError
 
     with job.list(assertion_conditions) as result:
         assert result == emitted_values

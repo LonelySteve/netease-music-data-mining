@@ -13,7 +13,6 @@ from pyee import AsyncIOEventEmitter
 from .exceptions import JobCancelError, RefuseHandleError
 from .flag import JobStepFlag
 from .span import StepSpan, WorkSpan
-
 from .util import jump_step, repr_injector
 
 _handler_type = Union[Callable[[int, "BaseJob"], None], Callable[[int], None]]
@@ -104,6 +103,9 @@ class IndexJob(BaseJob, WorkSpan):
         BaseJob.__init__(self, emitter=emitter)
         WorkSpan.__init__(self, begin, end, step)
 
+    def __str__(self):
+        return f"{self.__class__.__name__}({WorkSpan.__str__(self)})"
+
     @contextmanager
     def list(self, handler: _handler_type = None, only_index=True, record_valid_data=True):
         result = []
@@ -160,6 +162,9 @@ class IndexJob(BaseJob, WorkSpan):
                 self._flag -= JobStepFlag.running
                 self._flag += JobStepFlag.stopping_with_canceled
                 self._flag -= JobStepFlag.canceling
+            except AssertionError as e:
+                err = e
+                raise e  # for test
             except Exception as e:
                 err = e
                 self._flag -= JobStepFlag.running
@@ -272,7 +277,7 @@ class IndexJob(BaseJob, WorkSpan):
             self._handle()
             self.emitter.emit("IndexJob.handled", self)
             return True
-        except RefuseHandleError as e:
+        except (RefuseHandleError, AssertionError) as e:
             raise e
         except Exception as e:
             self.emitter.emit("IndexJob.handle_error", self, e)

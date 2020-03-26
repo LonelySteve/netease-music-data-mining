@@ -31,6 +31,9 @@ class Span(object):
     def __copy__(self):
         return Span(self.begin, self.end)
 
+    def __str__(self):
+        return f"begin={self.begin}, end={self.end}"
+
     @property
     def min_val(self):
         return min(self.begin, self.end)
@@ -66,8 +69,11 @@ class StepSpan(Span):
     def __copy__(self):
         return StepSpan(self.begin, self.end, self.step)
 
+    def __str__(self):
+        return f"begin={self.begin}, end={self.end}, step={self.step}"
 
-class WorkSpan(StepSpan, IStatus):
+
+class WorkSpan(StepSpan):
 
     def __init__(self, begin: int, end: Optional[int] = None, step: int = 1):
         self._worked_span: Optional[Span] = None
@@ -96,7 +102,7 @@ class WorkSpan(StepSpan, IStatus):
         return self._current
 
     @property
-    def process(self) -> float:
+    def processed(self) -> float:
         if self.worked_span is None:
             return 0
         return len(self.worked_span) / len(self)

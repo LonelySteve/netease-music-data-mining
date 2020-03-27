@@ -32,6 +32,7 @@ class Monitor(IIndexWorkStatus, metaclass=ABCMeta):
         self._work_thread: Optional[Thread] = None
         self._start_working_time: Optional[datetime] = None
         self._end_working_time: Optional[datetime] = None
+        self._exception: Optional[Exception] = None
 
     @property
     def work_thread(self):
@@ -55,6 +56,7 @@ class Monitor(IIndexWorkStatus, metaclass=ABCMeta):
             self.stop()
 
         self._work_thread = self._work_thread_factory(self._work)
+        self._work_thread.daemon = True
         self._work_thread.start()
 
     def stop(self):
@@ -64,6 +66,10 @@ class Monitor(IIndexWorkStatus, metaclass=ABCMeta):
             time.sleep(1)
         self._flag -= ThreadFlag.canceling
         self._flag += ThreadFlag.stopping_with_canceled
+
+    def raise_if_has_exception(self):
+        if self._exception is not None:
+            raise self._exception
 
     def _work(self):
         self._flag -= ThreadFlag.pending
@@ -81,7 +87,7 @@ class Monitor(IIndexWorkStatus, metaclass=ABCMeta):
         except Exception as err:
             self._flag -= ThreadFlag.running
             self._flag += ThreadFlag.stopping_with_exception
-            raise err
+            self._exception = err
         finally:
             self._end_working_time = datetime.now()
 

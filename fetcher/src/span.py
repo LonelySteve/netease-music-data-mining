@@ -93,6 +93,9 @@ class WorkSpan(StepSpan):
     def __copy__(self):
         return WorkSpan(self.begin, self.end, self.step)
 
+    def __str__(self):
+        return f"begin={self.begin}, end={self.end}, step={self.step}, current={self.current}"
+
     @property
     def worked_span(self):
         return self._worked_span

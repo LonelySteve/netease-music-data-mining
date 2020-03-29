@@ -6,10 +6,6 @@ from src.util import repr_injector
 from contextlib import contextmanager
 
 
-def _get_flag_items(cls):
-    return (item for key, item in cls.__dict__.items() if isinstance(item, FlagItem))
-
-
 @repr_injector
 class FlagItem(object):
     __slots__ = ("_flag_cls", "_parents", "aliases", "name")
@@ -34,7 +30,7 @@ class FlagItem(object):
 
     @property
     def flag_items(self):
-        return _get_flag_items(getattr(self, "_flag_cls"))
+        return (item for key, item in getattr(self, "_flag_cls").__dict__.items() if isinstance(item, FlagItem))
 
     @property
     def parents(self):

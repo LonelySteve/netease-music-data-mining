@@ -2,8 +2,6 @@
 import math
 from typing import Optional, Union
 
-from src.status import IStatus
-
 from .util import repr_injector
 
 
@@ -20,7 +18,7 @@ class Span(object):
     def __eq__(self, other):
         if not isinstance(other, Span):
             return False
-        return (self.begin, self.end) == (other.begin, other.end)
+        return self.__dict__ == other.__dict__
 
     def __hash__(self):
         return hash(self.begin) ^ hash(self.end)
@@ -61,7 +59,7 @@ class StepSpan(Span):
     def __eq__(self, other):
         if not isinstance(other, StepSpan):
             return False
-        return (self.begin, self.end, self.step) == (other.begin, other.end, other.step)
+        return self.__dict__ == other.__dict__
 
     def __hash__(self):
         return hash(self.begin) ^ hash(self.end) ^ hash(self.step)
@@ -84,8 +82,7 @@ class WorkSpan(StepSpan):
     def __eq__(self, other):
         if not isinstance(other, WorkSpan):
             return False
-        return (self.begin, self.end, self.step, self.worked_span, self.current) == (
-            other.begin, other.end, other.step, other.worked_span, other.current)
+        return self.__dict__ == other.__dict__
 
     def __hash__(self):
         return hash(self.begin) ^ hash(self.end) ^ hash(self.step) ^ hash(self.worked_span) ^ hash(self.current)

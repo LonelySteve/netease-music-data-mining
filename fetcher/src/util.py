@@ -5,7 +5,7 @@ from itertools import count, repeat
 from typing import Any, Callable
 
 
-def jump_step(start=0, stop=None, base=2, repeat_count=2):
+def jump_step(*, start=0, stop=None, base=2, repeat_count=2):
     """
     跳跃步进迭代器
 

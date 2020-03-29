@@ -13,6 +13,7 @@ from pyee import AsyncIOEventEmitter
 from .exceptions import JobCancelError, RefuseHandleError
 from .flag import JobStepFlag
 from .span import StepSpan, WorkSpan
+from .status import IStatus
 from .util import jump_step, repr_injector
 
 _handler_type = Union[Callable[[int, "BaseJob"], None], Callable[[int], None]]
@@ -46,10 +47,10 @@ class Handlers(object):
 
 
 @repr_injector
-class BaseJob(metaclass=ABCMeta):
+class BaseJob(IStatus, metaclass=ABCMeta):
     def __init__(self, emitter=None, flag: Optional[JobStepFlag] = None):
         self.handlers = Handlers()
-        self.emitter = emitter or AsyncIOEventEmitter()
+        self._emitter = emitter or AsyncIOEventEmitter()
         self._flag: JobStepFlag = flag or JobStepFlag(JobStepFlag.pending)
 
     def __call__(self, *args, **kwargs):
@@ -90,6 +91,7 @@ class BaseJob(metaclass=ABCMeta):
 
 
 class IndexJob(BaseJob, WorkSpan):
+
     def __init__(self, begin: int, end: Optional[int] = None, step: int = 1,
                  jump_step_func: Callable[[], Iterable[int]] = None, emitter=None):
 
@@ -106,6 +108,19 @@ class IndexJob(BaseJob, WorkSpan):
     def __str__(self):
         return f"{self.__class__.__name__}({WorkSpan.__str__(self)})"
 
+    def __eq__(self, other):
+        if not isinstance(other, IndexJob):
+            return False
+        return self.__dict__ == other.__dict__
+
+    def __hash__(self):
+        return hash(self.jump_step_func) ^ hash(self.job_span) ^ hash(self._break_point_span) ^ hash(
+            self._break_point_current) ^ hash(self._reverse_leaping_first_unaccepted_value) ^ WorkSpan.__hash__(self)
+
+    @property
+    def emitter(self):
+        return self._emitter
+    
     @contextmanager
     def list(self, handler: _handler_type = None, only_index=True, record_valid_data=True):
         result = []
@@ -135,7 +150,7 @@ class IndexJob(BaseJob, WorkSpan):
         with self._work():
             err = None
             try:
-                self.emitter.emit("IndexJob.running")
+                self._emitter.emit("IndexJob.running")
                 self._current = self.job_span.begin
                 self._flag += JobStepFlag.stepping
                 # 循环处理，下面是步骤简化图：
@@ -149,7 +164,7 @@ class IndexJob(BaseJob, WorkSpan):
                 # 反向步进<--反向跃进
                 #
                 while True:
-                    self.emitter.emit("IndexJob.step_switch", self)
+                    self._emitter.emit("IndexJob.step_switch", self)
 
                     if JobStepFlag.stepping in self.flag:
                         self._handle_stepping()
@@ -173,7 +188,7 @@ class IndexJob(BaseJob, WorkSpan):
                 self._break_point_span = None
                 self._break_point_current = None
                 self._reverse_leaping_first_unaccepted_value = None
-                self.emitter.emit("IndexJob.stopped", self, err)
+                self._emitter.emit("IndexJob.stopped", self, err)
 
     def _jumper(self, begin, sign):
         i = begin
@@ -273,14 +288,14 @@ class IndexJob(BaseJob, WorkSpan):
 
     def __safe_handle(self):
         try:
-            self.emitter.emit("IndexJob.handling", self)
+            self._emitter.emit("IndexJob.handling", self)
             self._handle()
-            self.emitter.emit("IndexJob.handled", self)
+            self._emitter.emit("IndexJob.handled", self)
             return True
         except (RefuseHandleError, AssertionError) as e:
             raise e
         except Exception as e:
-            self.emitter.emit("IndexJob.handle_error", self, e)
+            self._emitter.emit("IndexJob.handle_error", self, e)
             return False
 
     def _handle(self):

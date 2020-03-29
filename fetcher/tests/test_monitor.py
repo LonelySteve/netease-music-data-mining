@@ -1,10 +1,9 @@
 #!/usr/env python3
+import time
 from datetime import timedelta
 
 from src.fetcher import IndexFetcher
 from src.monitor import IndexFetcherMonitor
-
-import time
 
 
 def test_sample():

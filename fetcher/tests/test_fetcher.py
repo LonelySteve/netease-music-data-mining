@@ -3,7 +3,6 @@ import math
 
 import pytest
 from src.fetcher import IndexFetcher
-from src.flag import JobStepFlag
 
 
 def _spilt(jobs_, i_):
@@ -92,4 +91,3 @@ def test_job_iter_sample():
     assert len(jobs) == 2
     assert _spilt(jobs, 0) == (99, 66, -1)
     assert _spilt(jobs, 1) == (65, 0, -1)
-

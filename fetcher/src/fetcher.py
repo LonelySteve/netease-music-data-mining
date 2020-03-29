@@ -2,7 +2,7 @@
 import math
 import statistics
 import time
-from abc import ABCMeta, ABC
+from abc import ABC, ABCMeta
 from collections import deque
 from concurrent.futures import (Executor, Future, ThreadPoolExecutor,
                                 as_completed, wait)
@@ -10,19 +10,18 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from functools import partial
 from inspect import Parameter, signature
-from itertools import count
+from itertools import count, islice
 from queue import Queue
 from threading import Thread
-from typing import Callable, Dict, Iterable, List, Optional, Union
+from typing import Callable, Dict, Iterable, List, Optional
 
 from pyee import AsyncIOEventEmitter
 
+from .flag import ThreadFlag
 from .job import Handlers, IndexJob
 from .span import StepSpan
 from .status import IStatus
 from .util import jump_step, repr_injector
-from itertools import islice
-from .flag import ThreadFlag
 
 _executor_factory_type = Optional[Callable[[], Executor]]
 
@@ -31,13 +30,16 @@ class BaseFetcher(IStatus, ABC):
     __counter = 0
 
     def __init__(self, name=None, emitter=None, thread_weights=None, executor_factory: _executor_factory_type = None):
-        self.emitter = emitter or AsyncIOEventEmitter()
+        self.name = name or self.__class__.__name__
         self.thread_weights = thread_weights or [1]
-        self.executor_factory = executor_factory or (lambda: ThreadPoolExecutor(thread_name_prefix=name))
 
         self._working = False
+        self._emitter = emitter or AsyncIOEventEmitter()
         self._flag = ThreadFlag(ThreadFlag.pending)
         self._handlers: Dict[Callable[..., None], Parameter] = {}
+        self._executor_factory = executor_factory or (
+            lambda: ThreadPoolExecutor(thread_name_prefix=self.name)
+        )
 
     @property
     def flag(self):
@@ -66,12 +68,10 @@ class BaseFetcher(IStatus, ABC):
 class IndexFetcher(BaseFetcher, StepSpan):
 
     def __init__(self, begin: int, end: Optional[int] = None, step: int = 1,
-                 jump_step_func: Callable[[], Iterable[int]] = None, jump_step_limit: int = 3,
-                 name: Optional[str] = None, emitter=None,
+                 jump_step_func: Callable[[], Iterable[int]] = None, name: Optional[str] = None, emitter=None,
                  thread_weights=None, executor_factory: _executor_factory_type = None):
 
         self.jump_step_func = jump_step_func or jump_step
-        self.jump_step_limit = jump_step_limit
         self.handlers = Handlers()
 
         self._jobs: List[IndexJob] = []
@@ -88,10 +88,14 @@ class IndexFetcher(BaseFetcher, StepSpan):
     def jobs(self):
         return self._jobs.copy()
 
+    @property
+    def emitter(self):
+        return self._emitter
+
     def start(self):
         self._jobs.clear()
         self._job_futures.clear()
-        with self.executor_factory() as executor:
+        with self._executor_factory() as executor:
             for job in self.job_iter():
                 self._jobs.append(job)
                 self._job_futures[job] = executor.submit(job)

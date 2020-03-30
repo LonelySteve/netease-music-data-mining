@@ -109,7 +109,7 @@ class IndexJob(BaseJob, WorkSpan):
         WorkSpan.__init__(self, begin, end, step)
 
     def __str__(self):
-        return f"{self.__class__.__name__}({WorkSpan.__str__(self)})"
+        return f"{self.__class__.__name__}({WorkSpan.__str__(self)}) at 0x{id(self):x}"
 
     def __eq__(self, other):
         if not isinstance(other, IndexJob):

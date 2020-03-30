@@ -1,18 +1,10 @@
 #!/usr/env python3
 import math
-import statistics
-import time
-from abc import ABC, ABCMeta
-from collections import deque
+from abc import ABC
 from concurrent.futures import (Executor, Future, ThreadPoolExecutor,
-                                as_completed, wait)
-from contextlib import contextmanager
-from datetime import datetime, timedelta
-from functools import partial
-from inspect import Parameter, signature
-from itertools import count, islice
-from queue import Queue
-from threading import Thread
+                                as_completed)
+from inspect import Parameter
+from itertools import islice
 from typing import Callable, Dict, Iterable, List, Optional
 
 from pyee import AsyncIOEventEmitter
@@ -33,13 +25,22 @@ class BaseFetcher(IStatus, ABC):
         self.name = name or self.__class__.__name__
         self.thread_weights = thread_weights or [1]
 
-        self._working = False
         self._emitter = emitter or AsyncIOEventEmitter()
         self._flag = ThreadFlag(ThreadFlag.pending)
         self._handlers: Dict[Callable[..., None], Parameter] = {}
         self._executor_factory = executor_factory or (
             lambda: ThreadPoolExecutor(thread_name_prefix=self.name)
         )
+
+    def __str__(self):
+        return f"[{self.__class__.__name__}]" \
+               f" thread_weights={self.thread_weights!r}" \
+               f" working={self.working!r}" \
+               f" flag={self._flag!s}"
+
+    @property
+    def working(self):
+        return ThreadFlag.running in self._flag
 
     @property
     def flag(self):
@@ -85,6 +86,9 @@ class IndexFetcher(BaseFetcher, StepSpan):
         if len(self) < len(self.thread_weights):
             self.thread_weights = [1]
 
+    def __str__(self):
+        return BaseFetcher.__str__(self) + f" job_count={len(self._jobs)} " + StepSpan.__str__(self)
+
     @property
     def jobs(self):
         return self._jobs.copy()
@@ -109,7 +113,7 @@ class IndexFetcher(BaseFetcher, StepSpan):
         for future in as_completed(self._job_futures.values(), timeout=timeout):
             exc = future.exception(timeout=timeout)
             if exc is not None:
-                raise exc
+                raise exc  # 理论上来讲这里只会抛出 AssertionError
 
     def stop(self, timeout=None):
         if ThreadFlag.pending in self._flag:

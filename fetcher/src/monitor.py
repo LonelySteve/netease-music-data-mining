@@ -6,7 +6,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from threading import Thread
-from typing import Callable, Dict, Iterable, Optional, Union
+from typing import Callable, Dict, List, Optional, Union
 
 from .fetcher import IndexFetcher
 from .flag import ThreadFlag
@@ -116,11 +116,29 @@ class JobStatusData(IIndexWorkStatus):
 
     @property
     def processed(self) -> float:
+        """
+        处理进度
+        --------
+        - 以 0~1 之间的浮点数表示
+        - 无论 Job 何种状态，始终都会返回浮点数
+
+        :return: float
+        """
         return self.job.processed
 
     @property
-    def remaining_time(self) -> timedelta:
-        """估计的剩余的时间（单位：tick），如果采集数据过少或进度增长速度平均为 0，返回 timedelta.max"""
+    def remaining_time(self) -> Optional[timedelta]:
+        """
+        估计的剩余的时间
+        -------------------------
+        - 当作业处于非工作状态时放回 None
+        - 如果采集数据过少或进度增长速度平均为 0，返回 timedelta.max
+
+        :return: Optional[timedelta]
+        """
+        if not self.job.working:
+            return None
+
         if len(self.process_deque) < 2:
             return timedelta.max
 
@@ -134,15 +152,33 @@ class JobStatusData(IIndexWorkStatus):
         return self._tick_interval * ((1 - self.job.processed) / average_progress)
 
     @property
-    def average_speed(self) -> float:
-        """平均速度（单位：次/秒）"""
+    def average_speed(self) -> Optional[float]:
+        """
+        平均速度（单位：次/tick）
+        ---------------------
+        - 当作业处于非工作状态时放回 None
+        - 刚开始监视时，速度为 0
+
+        :return: Optional[float]
+        """
+        if not self.job.working:
+            return None
         if self.age.seconds == 0:
             return 0
         return self.total_count_of_indexes / self.age.seconds
 
     @property
-    def effective_average_speed(self) -> float:
-        """有效平均速度（单位：次/秒）"""
+    def effective_average_speed(self) -> Optional[float]:
+        """
+        有效平均速度（单位：次/tick）
+        ------------------------
+        - 当作业处于非工作状态时放回 None
+        - 刚开始监视时，速度为 0
+
+        :return: Optional[float]
+        """
+        if not self.job.working:
+            return None
         if self.age.seconds == 0:
             return 0
         return self.total_count_of_valid_indexes / self.age.seconds
@@ -150,7 +186,7 @@ class JobStatusData(IIndexWorkStatus):
 
 class IndexFetcherMonitor(Monitor, IIndexWorkStatus):
 
-    def __init__(self, fetchers: Union[IndexFetcher, Iterable[IndexFetcher]],
+    def __init__(self, fetchers: Union[IndexFetcher, List[IndexFetcher]],
                  tick_interval: Union[int, timedelta] = None,
                  work_thread_factory: _work_thread_factory_type = None):
         if isinstance(fetchers, IndexFetcher):
@@ -170,6 +206,8 @@ class IndexFetcherMonitor(Monitor, IIndexWorkStatus):
         for fetcher in self.fetchers:
             for job in fetcher.jobs:
                 if job in self._monitored_jobs:
+                    # NOTE: 由于计算剩余时间时，所用的双端队列的索引是从左往右，而正确的计算顺序应该是新的进度减去旧的进度，
+                    # 新进度（i+1，靠右）- 旧进度（i，靠左），因此要保证较新的进度值从双端队列的右端加入，较旧的进度从双端队列的左端弹出
                     self._monitored_jobs[job].process_deque.append(job.processed)
                     continue
 
@@ -185,6 +223,15 @@ class IndexFetcherMonitor(Monitor, IIndexWorkStatus):
 
     @property
     def processed(self) -> Optional[float]:
+        """
+        处理进度
+        --------
+        - 以 0~1 之间的浮点数表示
+        - 至少存在一个工作状态的 Job 时，返回所有 Job 处理进度的平均值
+        - 无任何处于工作状态的 Job 时，返回 None
+
+        :return: Optional[float]
+        """
         """当前进度（以浮点数表示，范围 0~1），如果状态不支持，返回 None"""
         try:
             return statistics.mean(
@@ -196,7 +243,14 @@ class IndexFetcherMonitor(Monitor, IIndexWorkStatus):
 
     @property
     def average_speed(self) -> Optional[float]:
-        """平均速度（每 tick 计），如果状态不支持，返回 None"""
+        """
+        平均速度（单位：次/tick）
+        ---------------------
+        - 至少存在一个工作状态的 Job 时，返回所有处于工作状态的 Job 的平均速度的平均值
+        - 无任何处于工作状态的 Job 时，返回 None
+
+        :return: Optional[float]
+        """
         try:
             return statistics.mean(
                 job_status_data.average_speed for job_status_data in self._monitored_jobs.values() if
@@ -207,12 +261,27 @@ class IndexFetcherMonitor(Monitor, IIndexWorkStatus):
 
     @property
     def remaining_time(self) -> Optional[timedelta]:
-        """推测剩余时间，如果状态不支持，放回 None"""
+        """
+        估计的剩余的时间
+        -------------------------
+        - 至少存在一个工作状态的 Job 时，返回所有处于工作状态的 Job 的估计的剩余的时间的最大值
+        - 无任何处于工作状态的 Job 时，返回 None
+
+        :return: Optional[timedelta]
+        """
         return max((job_status_data.remaining_time for job_status_data in self._monitored_jobs.values() if
                     job_status_data.job.working and job_status_data.remaining_time is not None), default=None)
 
     @property
     def effective_average_speed(self) -> Optional[float]:
+        """
+        有效平均速度（单位：次/tick）
+        ------------------------
+        - 至少存在一个工作状态的 Job 时，返回所有处于工作状态的 Job 的有效平均速度的平均值
+        - 无任何处于工作状态的 Job 时，返回 None
+
+        :return: Optional[float]
+        """
         try:
             return statistics.mean(
                 job_status_data.effective_average_speed for job_status_data in self._monitored_jobs.values() if

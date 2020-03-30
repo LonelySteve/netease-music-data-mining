@@ -1,15 +1,14 @@
 #!/usr/env python3
 from configparser import ConfigParser
-from typing import Optional, Dict
+from logging import Formatter, Logger, getLevelName
+from logging.handlers import TimedRotatingFileHandler
+from pathlib import Path
+from typing import Dict, Optional
 from urllib.parse import quote_plus
 
-from aiologger.handlers.files import (AsyncTimedRotatingFileHandler,
-                                      RolloverInterval)
-from aiologger.logger import Logger
-from aiologger.utils import classproperty
 from pymongo import MongoClient
+
 from src.exceptions import ConfigLoadError, ConfigNotLoadedError
-from pathlib import Path
 
 
 class ConfigMeta(type):
@@ -34,17 +33,14 @@ class Config(object, metaclass=ConfigMeta):
     # logger
     logger_level: str
     logger_log_file_path: Path
-    logger_log_file_rollover_interval: RolloverInterval
+    logger_log_file_rollover_interval: str
     logger_log_file_interval: int
     logger_log_file_backup_count: int
     logger_log_file_encoding: str
+    logger_format: str
 
     # api
     api_user_info_url: str
-
-    @classproperty
-    def parser(cls):
-        return cls._parser
 
     @classmethod
     def set_parser(cls, parser: Optional[ConfigParser]):
@@ -52,14 +48,14 @@ class Config(object, metaclass=ConfigMeta):
 
     @classmethod
     def load(cls, file_path, encoding=None):
-        cls.parser.read(file_path, encoding)
+        cls._parser.read(file_path, encoding)
         cls._load(file_path)
         cls._loaded = True
 
     @classmethod
     def dump(cls, file_path, encoding=None):
         with open(file_path, "w", encoding=encoding) as fp:
-            cls.parser.write(fp)
+            cls._parser.write(fp)
 
     @classmethod
     def _load(cls, file_path):
@@ -77,20 +73,20 @@ class Config(object, metaclass=ConfigMeta):
             "logger_log_file_path": lambda: Path(
                 cls._parser.get(
                     "logger", "log_file_path",
-                    fallback="logs/%Y-%m-%d-%H-%M-%S.log"
+                    fallback="logs/fetcher.log"
                 )
             ),
-            "logger_log_file_rollover_interval": lambda: RolloverInterval(
-                cls._parser.get(
-                    "logger",
-                    "log_file_rollover_interval",
-                    fallback=RolloverInterval.DAYS
-                )
+            "logger_log_file_rollover_interval": lambda: cls._parser.get(
+                "logger",
+                "log_file_rollover_interval",
+                fallback="D"
             ),
             "logger_log_file_interval": lambda: cls._parser.getint("logger", "log_file_interval", fallback=1),
             "logger_log_file_backup_count": lambda: cls._parser.getint("logger", "log_file_backup_count", fallback=0),
             "logger_log_file_encoding": lambda: cls._parser.get("logger", "log_file_encoding", fallback="utf-8"),
-
+            "logger_format": lambda: cls._parser.get(
+                "logger", "format",
+                fallback="[%(asctime)s][%(name)s/%(threadName)s][%(levelname)s]: %(message)s"),
             # api
             "api_user_info_url": lambda: cls._parser.get("api", "user_info_url",
                                                          fallback="http://127.0.0.1:3000/user/detail")
@@ -124,16 +120,17 @@ def get_logger(name: str) -> Logger:
 
     Config.logger_log_file_path.parent.mkdir(parents=True, exist_ok=True)
 
-    logger = Logger.with_default_handlers(name=name, level=Config.logger_level)
-    logger.add_handler(
-        AsyncTimedRotatingFileHandler(
-            filename=str(Config.logger_log_file_path),
-            when=Config.logger_log_file_rollover_interval,
-            interval=Config.logger_log_file_interval,
-            backup_count=Config.logger_log_file_backup_count,
-            encoding=Config.logger_log_file_encoding
-        )
+    logger = Logger(name, getLevelName(Config.logger_level))
+    handler = TimedRotatingFileHandler(
+        filename=str(Config.logger_log_file_path),
+        when=Config.logger_log_file_rollover_interval,
+        interval=Config.logger_log_file_interval,
+        backupCount=Config.logger_log_file_backup_count,
+        encoding=Config.logger_log_file_encoding
     )
+    handler.setFormatter(Formatter(Config.logger_format))
+    logger.addHandler(handler)
+
     _loggers[name] = logger
 
     return logger

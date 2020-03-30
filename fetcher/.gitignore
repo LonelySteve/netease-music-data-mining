@@ -161,3 +161,8 @@ $RECYCLE.BIN/
 # pycharm
 
 .idea/
+
+# logs
+
+log[s]/
+*.log

@@ -85,6 +85,7 @@ class BaseJob(IStatus, metaclass=ABCMeta):
             self._flag += JobStepFlag.stopping
 
     def cancel(self):
+        self._flag -= JobStepFlag.running
         self._flag += JobStepFlag.canceling
 
     def _try_cancel(self):

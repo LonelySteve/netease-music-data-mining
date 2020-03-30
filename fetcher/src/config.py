@@ -1,9 +1,10 @@
 #!/usr/env python3
+import os
 from configparser import ConfigParser
 from logging import Formatter, Logger, getLevelName
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Union
 from urllib.parse import quote_plus
 
 from pymongo import MongoClient
@@ -32,10 +33,10 @@ class Config(object, metaclass=ConfigMeta):
 
     # logger
     logger_level: str
-    logger_log_file_path: Path
+    logger_log_file_path: str
     logger_log_file_rollover_interval: str
-    logger_log_file_interval: int
-    logger_log_file_backup_count: int
+    logger_log_file_interval: Union[str, int]
+    logger_log_file_backup_count: Union[int]
     logger_log_file_encoding: str
     logger_format: str
 
@@ -47,7 +48,8 @@ class Config(object, metaclass=ConfigMeta):
         cls._parser = parser
 
     @classmethod
-    def load(cls, file_path, encoding=None):
+    def load(cls, file_path=None, encoding=None):
+        file_path = file_path or os.getenv("CONFIG_FILE_PATH", "config.ini")
         cls._parser.read(file_path, encoding)
         cls._load(file_path)
         cls._loaded = True
@@ -70,11 +72,9 @@ class Config(object, metaclass=ConfigMeta):
 
             # logger
             "logger_level": lambda: cls._parser.get("logger", "level", fallback="INFO"),
-            "logger_log_file_path": lambda: Path(
-                cls._parser.get(
-                    "logger", "log_file_path",
-                    fallback="logs/fetcher.log"
-                )
+            "logger_log_file_path": lambda: cls._parser.get(
+                "logger", "log_file_path",
+                fallback="logs/fetcher.log"
             ),
             "logger_log_file_rollover_interval": lambda: cls._parser.get(
                 "logger",
@@ -94,7 +94,7 @@ class Config(object, metaclass=ConfigMeta):
         # 遍历加载
         for key, getter in fields.items():
             try:
-                setattr(cls, key, getter())
+                setattr(cls, key, os.getenv(key.upper(), getter()))  # 环境变量值优先，配置文件值其后
             except Exception:
                 raise ConfigLoadError(
                     file_path, f"An exception occurred while getting the value of field {key!r}")
@@ -104,8 +104,9 @@ def get_mongo_database():
     if "mongo" not in Config.database_type.lower():
         raise RuntimeError("MongoDB is not currently supported.")
 
-    user_pass = "" if Config.database_user is None else \
-        f"{quote_plus(Config.database_user)}:{quote_plus(Config.database_password)}@"
+    user_pass = f"{quote_plus(Config.database_user)}:{quote_plus(Config.database_password)}@" \
+        if Config.database_user else ""
+
     host_port = f"{quote_plus(Config.database_host)}:{Config.database_port}"
 
     return MongoClient(f"mongodb://{user_pass}{host_port}")[Config.database_name]
@@ -118,14 +119,14 @@ def get_logger(name: str) -> Logger:
     if name in _loggers:
         return _loggers[name]
 
-    Config.logger_log_file_path.parent.mkdir(parents=True, exist_ok=True)
+    Path(Config.logger_log_file_path).parent.mkdir(parents=True, exist_ok=True)
 
     logger = Logger(name, getLevelName(Config.logger_level))
     handler = TimedRotatingFileHandler(
         filename=str(Config.logger_log_file_path),
         when=Config.logger_log_file_rollover_interval,
-        interval=Config.logger_log_file_interval,
-        backupCount=Config.logger_log_file_backup_count,
+        interval=int(Config.logger_log_file_interval),
+        backupCount=int(Config.logger_log_file_backup_count),
         encoding=Config.logger_log_file_encoding
     )
     handler.setFormatter(Formatter(Config.logger_format))

@@ -24,8 +24,7 @@ _logger: Optional[Logger] = None
 
 @app.on_event("startup")
 def startup():
-    config_file_path = os.getenv("CONFIG_FILE_PATH", "config.ini.example")
-    Config.load(config_file_path, encoding="utf8")
+    Config.load(encoding="utf8")
     global _db, _logger
     _db = get_mongo_database()
     _logger = get_logger("nmdm-fetcher-logger")

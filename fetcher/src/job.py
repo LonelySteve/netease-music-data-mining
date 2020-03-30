@@ -117,13 +117,13 @@ class IndexJob(BaseJob, WorkSpan):
         return self.__dict__ == other.__dict__
 
     def __hash__(self):
-        return hash(self.jump_step_func) ^ hash(self.job_span) ^ hash(self._break_point_span) ^ hash(
-            self._break_point_current) ^ hash(self._reverse_leaping_first_unaccepted_value) ^ WorkSpan.__hash__(self)
+        # NOTE: 重写基类 WorkSpan 的 __hash__ 方法，我们希望这个类是按其在内存中的地址进行 hash 计算的，即基类 BaseJob 的算法
+        return BaseJob.__hash__(self)
 
     @property
     def emitter(self):
         return self._emitter
-    
+
     @contextmanager
     def list(self, handler: _handler_type = None, only_index=True, record_valid_data=True):
         result = []

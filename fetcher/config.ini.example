@@ -1,0 +1,20 @@
+# 所有的节或者选项都是可选的，甚至本配置文件也是可选的
+# 缺省的默认值即下面相应项的值
+[database]
+# 当前仅支持 mongodb
+type=mongodb
+name=nmdm-fetcher
+host=127.0.0.1
+port=27017
+user= 
+password= 
+[logger]
+level=DEBUG
+log_file_path=logs/fetcher.log
+log_file_rollover_interval=D
+log_file_interval=1
+log_file_backup_count=5
+log_file_encoding=utf-8
+logger_format=[%(asctime)s][%(name)s/%(threadName)s][%(levelname)s]: %(message)s
+[api]
+user_info_url=http://127.0.0.1:3000/user/detail

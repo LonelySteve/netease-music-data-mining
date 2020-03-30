@@ -1,0 +1,37 @@
+version: "3"
+
+services:
+  netease-cloud-music-api:
+    image: binaryify/netease_cloud_music_api
+    restart: always
+    ports:
+      - 3000:3000
+    env_file: env/netease-cloud-music-api.env
+    networks:
+      - nmdm-fetcher
+
+  mongodb:
+    image: mongo
+    restart: always
+    env_file: env/mongodb.env
+    ports:
+      - 27017:27017
+    networks:
+      - nmdm-fetcher
+
+  fetcher:
+    build: ./fetcher
+    restart: always
+    ports:
+      - 50050:8000
+    volumes:
+      - ./data:/data
+    depends_on:
+      - mongodb
+      - netease-cloud-music-api
+    env_file: env/fetcher.env
+    networks:
+      - nmdm-fetcher
+
+networks:
+  nmdm-fetcher:

@@ -1,5 +1,6 @@
 #!/usr/env python3
 import math
+import sys
 from abc import ABCMeta, abstractmethod
 from contextlib import contextmanager
 from copy import copy
@@ -10,7 +11,8 @@ from typing import Callable, Iterable, Optional, Union
 
 from pyee import AsyncIOEventEmitter
 
-from .exceptions import JobCancelError, RefuseHandleError
+from .exceptions import (ExplicitlySkipHandlingError,
+                         ExplicitlyStopHandlingError, JobCancelError)
 from .flag import JobStepFlag
 from .span import StepSpan, WorkSpan
 from .status import IStatus
@@ -148,9 +150,10 @@ class IndexJob(BaseJob, WorkSpan):
     def run(self):
         self._worked_span = None
         with self._work():
-            err = None
+            err_info = (None, None, None)
+            # noinspection PyBroadException
             try:
-                self._emitter.emit("IndexJob.running")
+                self._emitter.emit("IndexJob.running", self)
                 self._current = self.job_span.begin
                 self._flag += JobStepFlag.stepping
                 # 循环处理，下面是步骤简化图：
@@ -170,25 +173,24 @@ class IndexJob(BaseJob, WorkSpan):
                         self._handle_stepping()
                     elif JobStepFlag.leaping in self.flag:
                         self._handle_leaping()
-            except IndexError as e:
-                err = e
-            except JobCancelError as e:
-                err = e
-                self._flag -= JobStepFlag.running
-                self._flag += JobStepFlag.stopping_with_canceled
+            except IndexError:
+                err_info = sys.exc_info()
+            except JobCancelError:
+                err_info = sys.exc_info()
                 self._flag -= JobStepFlag.canceling
-            except AssertionError as e:
-                err = e
-                raise e  # for test
-            except Exception as e:
-                err = e
+                self._flag += JobStepFlag.stopping_with_canceled
+            except AssertionError:
+                err_info = sys.exc_info()
+                raise err_info[2]  # for test
+            except Exception:
+                err_info = sys.exc_info()
                 self._flag -= JobStepFlag.running
                 self._flag += JobStepFlag.stopping_with_exception
             finally:
                 self._break_point_span = None
                 self._break_point_current = None
                 self._reverse_leaping_first_unaccepted_value = None
-                self._emitter.emit("IndexJob.stopped", self, err)
+                self._emitter.emit("IndexJob.stopped", self, err_info)
 
     def _jumper(self, begin, sign):
         i = begin
@@ -287,15 +289,22 @@ class IndexJob(BaseJob, WorkSpan):
             self._prepare_reverse_leaping()
 
     def __safe_handle(self):
+        err_info = (None, None, None)
+        # noinspection PyBroadException
         try:
             self._emitter.emit("IndexJob.handling", self)
             self._handle()
             self._emitter.emit("IndexJob.handled", self)
             return True
-        except (RefuseHandleError, AssertionError) as e:
+        except ExplicitlySkipHandlingError:
+            err_info = sys.exc_info()
+            self._emitter.emit("IndexJob.handle_skipped", self, err_info)
+            return False
+        except (ExplicitlyStopHandlingError, AssertionError) as e:
             raise e
-        except Exception as e:
-            self._emitter.emit("IndexJob.handle_error", self, e)
+        except Exception:
+            err_info = sys.exc_info()
+            self._emitter.emit("IndexJob.unexpected_exception", self, err_info)
             return False
 
     def _handle(self):

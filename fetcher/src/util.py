@@ -1,4 +1,5 @@
 #!/usr/env python3
+import traceback
 from functools import partial
 from inspect import isfunction, isgenerator, ismethod
 from itertools import count, repeat
@@ -52,3 +53,10 @@ def repr_injector(cls=None, filter_: Callable[[str, Any], bool] = None, format_d
     setattr(cls, "__repr__", __repr__)
 
     return cls
+
+
+def get_traceback_text(ex_type, ex_obj, tb, *, limit=None):
+    if ex_type is None or ex_obj is None or tb is None:
+        return None
+
+    return ''.join(traceback.format_exception(ex_type, ex_obj, tb, limit=limit))

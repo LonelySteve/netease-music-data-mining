@@ -1,8 +1,8 @@
+from logging import Logger
 from typing import List, Optional, Union
 
 import requests
 import uvicorn
-from aiologger import Logger
 from fastapi import FastAPI, HTTPException, Query
 from starlette.responses import RedirectResponse
 

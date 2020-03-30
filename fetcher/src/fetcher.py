@@ -76,6 +76,7 @@ class IndexFetcher(BaseFetcher, StepSpan):
 
         self._jobs: List[IndexJob] = []
         self._job_futures: Dict[IndexJob, Future] = {}
+        self._executor: Optional[Executor] = None
 
         BaseFetcher.__init__(self, name=name, emitter=emitter, thread_weights=thread_weights,
                              executor_factory=executor_factory)
@@ -93,14 +94,16 @@ class IndexFetcher(BaseFetcher, StepSpan):
         return self._emitter
 
     def start(self):
+        if ThreadFlag.stopping in self._flag:
+            raise RuntimeError(f"Cannot stop a Fetcher that has already stopped.")
         self._jobs.clear()
         self._job_futures.clear()
-        with self._executor_factory() as executor:
-            for job in self.job_iter():
-                self._jobs.append(job)
-                self._job_futures[job] = executor.submit(job)
-            self._flag -= ThreadFlag.pending
-            self._flag += ThreadFlag.running
+        self._executor = self._executor_factory()
+        for job in self.job_iter():
+            self._jobs.append(job)
+            self._job_futures[job] = self._executor.submit(job)
+        self._flag -= ThreadFlag.pending
+        self._flag += ThreadFlag.running
 
     def join(self, timeout=None):
         for future in as_completed(self._job_futures.values(), timeout=timeout):
@@ -109,9 +112,12 @@ class IndexFetcher(BaseFetcher, StepSpan):
                 raise exc
 
     def stop(self, timeout=None):
+        if ThreadFlag.pending in self._flag:
+            return
         for job in self._jobs:
             job.cancel()
         self.join(timeout)
+        self._executor.shutdown()
         self._flag -= ThreadFlag.running
         self._flag += ThreadFlag.stopping
 

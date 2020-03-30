@@ -16,7 +16,15 @@ class ConfigLoadError(ConfigError):
         return f"Configuration file ({self.file_path}) loading error{reason_str}"
 
 
-class UserNotFoundError(Exception):
+class ExplicitlyStopHandlingError(Exception):
+    """明确停止处理错误，用于处理器中，将导致整个作业停止"""
+
+
+class ExplicitlySkipHandlingError(Exception):
+    """明确跳过处理错误，用于处理器中，将导致当前作业的单个处理步骤被跳过"""
+
+
+class UserNotFoundError(ExplicitlySkipHandlingError):
     """用户未找到错误"""
 
     def __init__(self, uid):
@@ -29,10 +37,6 @@ class UserNotFoundError(Exception):
 
 class ConfigNotLoadedError(ConfigError):
     """配置未加载错误"""
-
-
-class RefuseHandleError(Exception):
-    """拒绝处理错误，用于处理器中，实现能中断处理方式"""
 
 
 class JobCancelError(Exception):

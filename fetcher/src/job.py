@@ -290,7 +290,6 @@ class IndexJob(BaseJob, WorkSpan):
             self._prepare_reverse_leaping()
 
     def __safe_handle(self):
-        err_info = (None, None, None)
         # noinspection PyBroadException
         try:
             self._emitter.emit("IndexJob.handling", self)

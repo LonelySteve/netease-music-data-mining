@@ -1,4 +1,57 @@
 #!/usr/env python3
+
+
+from typing import Type
+
+
+class ValueChoicesError(ValueError):
+    def __init__(self, supported_values, actual_value, argument_name=None):
+        if len(supported_values) == 0:
+            supported_values = [supported_values]
+
+        self.supported_values = supported_values
+        self.actual_value = actual_value
+        self.argument_name = argument_name
+
+        super().__init__(supported_values, actual_value, argument_name)
+
+    def __str__(self):
+        if self.argument_name:
+            return (
+                f"the value of argument {self.argument_name!r} cannot be {self.actual_value!r}"
+                f" (supported values ​​are in {self.supported_values!r})."
+            )
+        else:
+            return f"value {self.actual_value!r} is invalid (supported values ​​are in {self.supported_values!r})."
+
+
+class TypeErrorEx(TypeError):
+    def __init__(self, supported_types, actual_value, argument_name=None):
+        if isinstance(supported_types, Type):
+            supported_types = [supported_types]
+
+        self.supported_types = supported_types
+        self.actual_value = actual_value
+        self.argument_name = argument_name
+
+        super().__init__(supported_types, actual_value, argument_name)
+
+    def __str__(self):
+        if len(self.supported_types) == 1:
+            expect_hint = f"{self.supported_types[0]}"
+        else:
+            expect_hint = (
+                f"{', '.join(str(item) for item in self.supported_types[:-1])} or {self.supported_types[1]}"
+            )
+
+        base = f"expect {expect_hint}, not {type(self.actual_value)}"
+
+        if self.argument_name:
+            base += f" for argument {self.argument_name!r}"
+
+        return base
+
+
 class ConfigError(Exception):
     """配置相关的错误"""
 

@@ -9,19 +9,6 @@ from .exceptions import TypeErrorEx
 from .util import is_iterable, repr_injector, void
 
 
-class IncompatibleFlagError(ValueError):
-    """不兼容的 Flag 错误"""
-
-    def __init__(self, flag_group: "FlagGroup", flag: "Flag"):
-        super().__init__(flag_group, flag)
-
-        self.flag_group = flag_group
-        self.flag = flag
-
-    def __str__(self):
-        return f"{self.flag} is not compatible with {type(self.flag_group)}"
-
-
 @repr_injector
 class Flag(object):
     __slots__ = ("_parents", "_aliases", "_name")
@@ -29,7 +16,7 @@ class Flag(object):
     def __init__(
         self,
         name: Optional[str] = None,
-        parents: Union[str, Iterable[str]] = None,
+        parents: Optional[Union[str, Iterable[str]]] = None,
         aliases: Optional[Union[str, Iterable[str]]] = None,
     ):
         name = name if name else None
@@ -72,6 +59,16 @@ class Flag(object):
 
     @staticmethod
     def standardized_name(name: str):
+        """
+        标准化名称，去除名称前后的空白，并验证有效性
+        
+        :param name: 要标准化的名称
+        :type name: str
+        :raises TypeErrorEx: 当传入的名称不为 str 类型时抛出
+        :raises ValueError: 当名称为空或含有'|'字符时抛出
+        :return: 被标准化后的名称
+        :rtype: str
+        """
         if not isinstance(name, str):
             raise TypeErrorEx(str, name, name)
 
@@ -168,16 +165,15 @@ class FlagGroupMeta(type):
     def __setattr__(self, key, value):
         if isinstance(value, Flag):
             raise ValueError(
-                "FlagItem type attribute cannot be set to the current class object, "
-                "please use inheritance instead."
+                "`Flag` type attribute cannot be set to the current class object, "
+                "please use inheritance instead"
             )
         super().__setattr__(key, value)
 
     def __delattr__(self, item):
         if isinstance(getattr(self, item), Flag):
-            raise ValueError(
-                "FlagItem type attribute cannot be deleted to the current class object"
-            )
+            raise ValueError("`Flag` type attribute cannot be deleted")
+        super().__delattr__(item)
 
 
 class FlagGroupCallbackInfo(object):
@@ -230,7 +226,7 @@ class FlagGroup(metaclass=FlagGroupMeta):
             self.set(flags)
 
     def __str__(self):
-        return "|".join(f"{flag!s}" for flag in self._flags)
+        return f'[{"|".join(f"{flag!s}" for flag in self._flags)}]'
 
     def __or__(self, other):
         return self.__add__(other)
@@ -264,46 +260,42 @@ class FlagGroup(metaclass=FlagGroupMeta):
             for registered_flag in cls.__get_registered_flags():
                 if name == registered_flag:
                     raise ValueError(
-                        f"the name {name!r} in {flag!r} conflicts with {registered_flag}"
+                        f"the name {name!r} in {flag!r} conflicts with {registered_flag!r}"
                     )
 
     @classmethod
-    def _check_loop(cls, flag: Flag):
-        # 采取 DFS（深度优先算法），由于我们能确保原先的标志组一定不成环，所以只需要确定引入新注册的标志是否会导致成环
-        _flag_items_copy = cls.__get_registered_flags().copy()
-        _flag_items_copy.add(flag)
-        _visit_states = DefaultDict[Flag, bool](default_factory=bool)
-        _loop = []
-        _collect_loop_nodes = False
+    def _check_loop(cls, flag: Flag, flags: Iterable[Flag]):
+        # 采取 DFS（深度优先算法），由于我们能确保原先的标志组一定不成环，所以只需要确定引入新注册的标志们是否会导致成环
+        visit_states = DefaultDict[Flag, bool](default_factory=bool)
+        loop = []
+        loop_nodes_collecting = False
 
         def visit(flag_: Flag):
-            nonlocal _collect_loop_nodes
+            nonlocal loop_nodes_collecting
 
-            _visit_states[flag_] = True
+            visit_states[flag_] = True
 
             for parent in flag_.parents:
-                parent_flag = cls.get_flag(parent)
-                # 跳过还未注册的父引用
-                if parent_flag not in _flag_items_copy:
-                    continue
+                parent_flag = cls.get_flag(parent, flags)
 
-                if not _visit_states.get(parent_flag, False):
+                if not visit_states.get(parent_flag, False):
                     visit(parent_flag)
                 else:
-                    _loop.append(parent_flag)
-                    _collect_loop_nodes = True
+                    loop.append(parent_flag)
+                    loop_nodes_collecting = True
                     break
 
-            if _loop and flag_ in _loop:
-                _collect_loop_nodes = False
-            if _collect_loop_nodes:
-                _loop.append(flag_)
+            if loop and flag_ in loop:
+                loop_nodes_collecting = False
+            if loop_nodes_collecting:
+                loop.append(flag_)
 
         visit(flag)
 
-        if _loop:
+        if loop:
             raise ValueError(
-                f"{flag!r} will cause a circular reference problem ({'<-'.join(_loop)}<-{_loop[0]})"
+                f"{flag!r} will cause a circular reference problem"
+                f" ({'<-'.join(str(flag) for flag in loop)}<-{loop[0]})"
             )
 
     @classmethod
@@ -332,11 +324,10 @@ class FlagGroup(metaclass=FlagGroupMeta):
                 raise ValueError(f"{flag!r} must have at least one name or alias")
 
             _flags = cls.__get_registered_flags()
-
             # 检查名称和别名是否冲突
             cls._check_flag_conflict(flag)
             # 检查新加入该标志是否会导致环状引用问题
-            cls._check_loop(flag)
+            cls._check_loop(flag, flags)
 
             _flags.add(flag)
             cls.__set_registered_flags(_flags)
@@ -361,20 +352,44 @@ class FlagGroup(metaclass=FlagGroupMeta):
         return all((flag in self) for flag in flags)
 
     @classmethod
-    def get_flag(cls, s: str) -> Flag:
-        """从字符串形式转换到 FlagItem"""
-        if not isinstance(s, str):
-            raise TypeErrorEx(str, s, "s")
+    def get_flag(
+        cls, name: str, fallback_flags: Optional[Iterable[Flag]] = None
+    ) -> Flag:
+        """
+        以指定名称寻找已注册的 `Flag` 对象
+        
+        默认的行为是从当前类对象中寻找符合指定名称的 `Flag` 对象，
+        如果未找到且提供了 `fallback_flags` 参数，则尝试遍历该参数寻找符合指定名称的 `Flag` 对象,
+        如果仍未找到，抛出 `ValueError`
+        
+        :param name: 要寻找的 Flag 对象名称，可以是别名
+        :type name: str
+        :param fallback_flags: 备用 Flags, defaults to None
+        :type fallback_flags: Optional[Iterable], optional
+        :raises TypeErrorEx: 传入的 name 参数不为 str 类型
+        :raises ValueError: 当前类对象中没有符合指定名称的 `Flag` 对象，且即使提供了 `fallback_flags`，也没有找到符合的 `Flag` 对象时抛出
+        :return: `Flag` 对象
+        :rtype: Flag
+        """
+        if not isinstance(name, str):
+            raise TypeErrorEx(str, name, "name")
 
-        s = s.strip()
+        name = name.strip()
 
         result = next(
-            (item for item in cls.__get_registered_flags() if s in item.names), None
+            (flag for flag in cls.__get_registered_flags() if name in flag.names), None
         )
-        if result is None:
-            raise ValueError(f"unknown name: {s!r}")
 
-        return result
+        if result is not None:
+            return result
+
+        if fallback_flags is not None:
+            result = next((flag for flag in fallback_flags if name in flag.names), None)
+
+        if result is not None:
+            return result
+
+        raise ValueError(f"unknown name: {name!r}")
 
     def has(self, flag: Union[str, Flag]):
         return flag in self
@@ -389,8 +404,10 @@ class FlagGroup(metaclass=FlagGroupMeta):
         # 遍历一遍以收集所有要设置的标志对象
         for flag in flags:
             if isinstance(flag, str):
-                for single_flag_name in flag.split("|"):
-                    result_set.add(self.get_flag(single_flag_name))
+                result_set.update(
+                    self.get_flag(single_flag_name)
+                    for single_flag_name in flag.split("|")
+                )
             elif isinstance(flag, Flag):
                 result_set.add(flag)
             else:
@@ -404,7 +421,7 @@ class FlagGroup(metaclass=FlagGroupMeta):
             for flag in self.to_flag_objs(flags):
                 # 检查兼容性
                 if flag not in self.__get_registered_flags():
-                    raise IncompatibleFlagError(self, flag)
+                    raise ValueError(f"{flag} is not compatible with {self}")
                 # 检查父引用，有必要的话，设置父标志到当前标志组
                 for parent_name in flag.parents:
                     if (
@@ -430,10 +447,9 @@ class FlagGroup(metaclass=FlagGroupMeta):
             # 遍历取消设置每一个收集到的标志对象
             for flag in self.to_flag_objs(flags):
                 # 检查要移除的标志是否被依赖
-                for f in self._flags - {flag}:
-                    if flag in f.parents:
-                        # TODO 更好的翻译或者异常
-                        raise ValueError(f"{flag!r} is dependent on {f!r}")
+                for flag_ in self._flags - {flag}:
+                    if flag in flag_.parents:
+                        raise ValueError(f"{flag!r} is dependent on {flag_!r}")
                 # RLock 获取锁之后移除标志
                 with self._lock:
                     if flag in self._flags:  # 允许取消设置一个已经未设置的标志

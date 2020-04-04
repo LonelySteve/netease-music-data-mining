@@ -1,10 +1,12 @@
 #!/usr/env python3
 from concurrent.futures import ThreadPoolExecutor
+from itertools import chain
 
 import pytest
 
-from src.flag import Flag, FlagGroup, IncompatibleFlagError, TaskFlagGroup
-from tests.utils import override_flag_registered, test_flag_tuple
+from src.flag import Flag, FlagGroup, TaskFlagGroup
+from src.util import void
+from tests.utils import _test_flag_tuple, override_flag_registered
 
 
 class TestFlag(object):
@@ -16,6 +18,43 @@ class TestFlag(object):
         Flag(parents="777", aliases="888")
         Flag(name="cccc", parents="asd asd", aliases="asd |qwerty| aaa")
         Flag(name="", parents="", aliases="")  # 这是被允许的，等价于填 None
+
+    @pytest.mark.parametrize("value", ("", " ", "|", " |", "| ", " | ", "   "))
+    def test_standardized_name_invalid_case(self, value):
+        match_content = "|" if "|" in value else "empty"
+        with pytest.raises(ValueError, match=match_content):
+            Flag.standardized_name(value)
+
+    @pytest.mark.parametrize(
+        "value",
+        (
+            "test",
+            " test",
+            "test ",
+            " test ",
+            "for test",
+            " for test",
+            "for test ",
+            " for test ",
+        ),
+    )
+    def test_standardized_name_valid_case(self, value):
+        assert Flag.standardized_name(value) == value.strip()
+
+    @pytest.mark.parametrize("name", ("test", " aaa", "bbb ", " ccc ", None))
+    @pytest.mark.parametrize(
+        "aliases", ("test", " aaa", "bbb ", " ddd ", "aaa|bbb", None)
+    )
+    def test_names_property(self, name, aliases):
+        flag = Flag(name=name, aliases=aliases)
+
+        correct_cases = set()
+        if name is not None:
+            correct_cases.add(name.strip())
+        if aliases is not None:
+            correct_cases.update(item.strip() for item in aliases.split("|"))
+
+        assert flag.names == correct_cases
 
     @pytest.mark.parametrize(
         "invalid_value", (" ", "   ", "|", "asd|", "|test", "|test|")
@@ -29,10 +68,49 @@ class TestFlag(object):
         with pytest.raises(ValueError):
             Flag(parents=invalid_value)
 
-    @pytest.mark.parametrize("invalid_value", ("|", "test|", "|test", "for|test"))
-    def test_delimiters_check(self, invalid_value):
+    @pytest.mark.parametrize("value", ("|", "test|", "|test", "for|test"))
+    def test_delimiters_invalid_case(self, value):
         with pytest.raises(ValueError):
-            Flag(name=invalid_value)
+            Flag(name=value)
+
+    @pytest.mark.parametrize("parents", (True, False))
+    @pytest.mark.parametrize("aliases", (True, False))
+    @pytest.mark.parametrize(
+        "value", ("for|test", "aa|bb|cc", ("aa", "bb"), ("aa", "bb", "cc"))
+    )
+    def test_delimiters_valid_case(self, parents, aliases, value):
+        kwargs = {}
+        if parents:
+            kwargs["parents"] = value
+        if aliases:
+            kwargs["aliases"] = value
+
+        Flag(**kwargs)
+
+    @pytest.mark.parametrize("name", (void, "test"))
+    @pytest.mark.parametrize("parents", (void, "test", "aaa|bbb", ("aaa", "bbb")))
+    @pytest.mark.parametrize("aliases", (void, "test", "aaa|bbb", ("aaa", "bbb")))
+    def test_replace(self, name, parents, aliases):
+        flag = Flag(name="name", parents="parents", aliases="aliases")
+        new_flag = flag.replace(name=name, parents=parents, aliases=aliases)
+
+        arg_values = [name, parents, aliases]
+        old_values = [flag.name, flag.parents, flag.aliases]
+        new_values = [new_flag.name, new_flag.parents, new_flag.aliases]
+
+        for i, arg in enumerate(arg_values):
+            if i == 0 or arg == void:
+                continue
+            if isinstance(arg, str):
+                arg = arg.split("|")
+
+            arg_values[i] = set(arg)
+
+        for arg, old, new in zip(arg_values, old_values, new_values):
+            if arg == void:
+                assert old == new
+            else:
+                assert arg == new
 
     @pytest.mark.parametrize("attr", ("name", "aliases", "parents"))
     def test_readonly_property(self, attr):
@@ -85,17 +163,54 @@ class TestFlagGroup(object):
         with pytest.raises(TypeError):
             FlagGroup(eval("123"))
 
+    @pytest.mark.parametrize("value", ("test", "test|foo|bar"))
+    def test_len_magic_method(self, value):
+        with override_flag_registered(value) as all_flags:
+            flag_group = FlagGroup(all_flags)
+            assert len(flag_group) == len(all_flags)
+
+    @pytest.mark.parametrize("value", ("test", "test|foo|bar"))
+    def test_iter_magic_method(self, value):
+        with override_flag_registered(value) as all_flags:
+            flag_group = FlagGroup(all_flags)
+            assert set(flag_group) == set(all_flags)
+
+    def test_loop_check(self):
+        with pytest.raises(ValueError, match="aaa<-bbb<-aaa"):
+
+            class _TestFlagGroup_0(FlagGroup):
+                aaa = Flag(parents="bbb")
+                bbb = Flag(parents="aaa")
+
+        with pytest.raises(ValueError, match="aaa<-ccc<-bbb<-aaa"):
+
+            class _TestFlagGroup_1(FlagGroup):
+                aaa = Flag(parents="bbb")
+                bbb = Flag(parents="ccc")
+                ccc = Flag(parents="aaa")
+
+        # 这种情况下的会有两种成环结果：
+        # - bbb<-ccc<-bbb
+        # - aaa<-ccc<-bbb<-aaa
+        # 两种结果均是正确的，由于标志组采用集合进行内部实现，所以具体会抛出哪种成环结果并不确定，两种均有可能
+        with pytest.raises(
+            ValueError, match=r"(?:bbb<-ccc<-bbb)|(?:aaa<-ccc<-bbb<-aaa)"
+        ):
+
+            class _TestFlagGroup_2(FlagGroup):
+                aaa = Flag(parents="bbb")
+                bbb = Flag(parents="ccc")
+                ccc = Flag(parents="aaa|bbb")
+
     @pytest.mark.parametrize("invalid_value", ("test", Flag("test")))
     def test_incompatible_flag_item_check(self, invalid_value):
-        # 字符串如果未找到抛出 ValueError
-        # Flag 对象则抛出 IncompatibleFlagError(ValueError)
+        # 如果未找到抛出 ValueError
         if isinstance(invalid_value, str):
             with pytest.raises(ValueError):
                 FlagGroup(invalid_value)
         elif isinstance(invalid_value, Flag):
-            flag = FlagGroup()
-            with pytest.raises(IncompatibleFlagError):
-                flag.set(invalid_value)
+            with pytest.raises(ValueError):
+                FlagGroup().set(invalid_value)
 
     @pytest.mark.parametrize(
         "set_style",
@@ -109,7 +224,7 @@ class TestFlagGroup(object):
         "unset_style",
         (lambda flag, values: flag.unset(values), lambda flag, values: flag - values),
     )
-    @pytest.mark.parametrize("flag", test_flag_tuple)
+    @pytest.mark.parametrize("flag", _test_flag_tuple)
     def test_set_and_unset(self, set_style, unset_style, flag):
         with override_flag_registered(flag) as all_flags:
             # 构造时指定
@@ -130,7 +245,7 @@ class TestFlagGroup(object):
             for item in all_flags:
                 assert item not in flag_group
 
-    @pytest.mark.parametrize("flag", test_flag_tuple)
+    @pytest.mark.parametrize("flag", _test_flag_tuple)
     def test_any_and_all(self, flag):
         with override_flag_registered(flag) as all_flags:
             flag = FlagGroup(flag)
@@ -252,5 +367,11 @@ class TestFlagGroup(object):
 
         assert flag_group.has(TaskFlagGroup.pending)
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="stopping"):
             flag_group.set(TaskFlagGroup.stopping)
+
+    def test_parents_invalid_case(self):
+        with pytest.raises(ValueError, match="invalid"):
+
+            class _TestFlagGroup(FlagGroup):
+                aaa = Flag(parents="bbb")

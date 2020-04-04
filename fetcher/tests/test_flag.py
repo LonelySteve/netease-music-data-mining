@@ -3,7 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from src.flag import Flag, FlagGroup, IncompatibleFlagError
+from src.flag import Flag, FlagGroup, IncompatibleFlagError, TaskFlagGroup
 from tests.utils import override_flag_registered, test_flag_tuple
 
 
@@ -12,9 +12,9 @@ class TestFlag(object):
         Flag()
         Flag(name="aaa")
         Flag(name="123")
-        Flag(name="bbb", parents="asd|asdas")
+        Flag(name="bbb", parents="asd|asd")
         Flag(parents="777", aliases="888")
-        Flag(name="cccc", parents="asdasd", aliases="asdas|qweqsad|asda")
+        Flag(name="cccc", parents="asd asd", aliases="asd |qwerty| aaa")
         Flag(name="", parents="", aliases="")  # 这是被允许的，等价于填 None
 
     @pytest.mark.parametrize(
@@ -246,3 +246,11 @@ class TestFlagGroup(object):
                 executor.map(job, range(5))
 
             assert "test" not in flag_group
+
+    def test_set_and_unset_conflict(self):
+        flag_group = TaskFlagGroup(TaskFlagGroup.pending)
+
+        assert flag_group.has(TaskFlagGroup.pending)
+
+        with pytest.raises(ValueError):
+            flag_group.set(TaskFlagGroup.stopping)

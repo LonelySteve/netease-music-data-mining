@@ -6,7 +6,7 @@ from threading import RLock
 from typing import DefaultDict, FrozenSet, Iterable, List, Optional, Set, Union
 
 from .exceptions import TypeErrorEx
-from .util import repr_injector, void
+from .util import is_iterable, repr_injector, void
 
 
 class IncompatibleFlagError(ValueError):
@@ -118,9 +118,9 @@ class Flag(object):
 
     def replace(
         self,
-        name: Optional[Union[str, object]] = void,
-        parents: Union[str, Iterable[str], object] = void,
-        aliases: Optional[Union[str, Iterable[str], object]] = void,
+        name: Union[str, object, None] = void,
+        parents: Union[str, Iterable[str], object, None] = void,
+        aliases: Union[str, Iterable[str], object, None] = void,
     ):
         """
         替换指定的值，返回新的标志实例，替换的新值可以为 None
@@ -139,23 +139,31 @@ class Flag(object):
 
 
 class FlagGroupMeta(type):
-    def __init__(cls, name, bases, attrs, **kwargs):
-        # 先注册基类的
-        for base in bases[-1::-1]:
-            base_flags = getattr(base, "__get_registered_flags", lambda: None)()
-            if base_flags:
-                cls.register(*base_flags)
-        # 再注册本类的
-        new_flags = []
-
+    def __new__(mcs, name, bases, attrs, **kwargs):
+        # 收集本类定义的标志
+        cls_new_flags = []
+        # 遍历每个属性，对于每一个属性值为 Flag 类型的键值对：
+        # - 获取新的 flag 对象（尝试替换旧 flag 对象的 name 属性）
+        # - 添加至 new_flags 收集起来
+        # - 重设 cls 对应键的值
         for key, value in attrs.copy().items():
             if isinstance(value, Flag):
                 new_flag = attrs[key] = value.replace(name=value.name or key)
-                new_flags.append(new_flag)
+                cls_new_flags.append(new_flag)
 
-        cls.register(*new_flags)
+        cls = super().__new__(mcs, name, bases, attrs)
+        cls_register_method = getattr(cls, "register")
+        # 先注册基类的
+        for base in bases[-1::-1]:
+            base_flags = getattr(
+                base, f"_{cls.__class__.__name__}__get_registered_flags", lambda: None
+            )()
+            if base_flags:
+                cls_register_method(base_flags)
+        # 再注册本类的
+        cls_register_method(cls_new_flags)
 
-        super().__init__(name, bases, attrs)
+        return cls
 
     def __setattr__(self, key, value):
         if isinstance(value, Flag):
@@ -170,9 +178,6 @@ class FlagGroupMeta(type):
             raise ValueError(
                 "FlagItem type attribute cannot be deleted to the current class object"
             )
-
-    def register(self, *flags: Flag):
-        raise NotImplementedError  # 交给类自己去实现
 
 
 class FlagGroupCallbackInfo(object):
@@ -189,6 +194,9 @@ class FlagGroupCallbackInfo(object):
         self.call_counter = max_call_count
 
 
+_flags_type = Union[str, Flag, Iterable[Union[str, Flag]]]
+
+
 @repr_injector
 class FlagGroup(metaclass=FlagGroupMeta):
     """
@@ -202,7 +210,7 @@ class FlagGroup(metaclass=FlagGroupMeta):
 
     _lock = RLock()
 
-    def __init__(self, *flags: Union[str, Flag]):
+    def __init__(self, flags: Optional[_flags_type] = None):
         """
         实例化 Flag
         ----------
@@ -218,7 +226,8 @@ class FlagGroup(metaclass=FlagGroupMeta):
             Flag, List[FlagGroupCallbackInfo]
         ](list)
 
-        self.set(*flags)
+        if flags:
+            self.set(flags)
 
     def __str__(self):
         return "|".join(f"{flag!s}" for flag in self._flags)
@@ -314,7 +323,7 @@ class FlagGroup(metaclass=FlagGroupMeta):
                     )
 
     @classmethod
-    def register(cls, *flags: Flag):
+    def register(cls, flags: Iterable[Flag]):
         # 检查父名称是否有效
         cls._check_parent(flags)
 
@@ -367,10 +376,15 @@ class FlagGroup(metaclass=FlagGroupMeta):
 
         return result
 
-    def has(self, item: Union[str, Flag]):
-        return item in self
+    def has(self, flag: Union[str, Flag]):
+        return flag in self
 
-    def to_flag_objs(self, *flags: Union[str, Flag]):
+    def to_flag_objs(self, flags: _flags_type):
+        if isinstance(flags, (str, Flag)):
+            flags = [flags]
+        elif not is_iterable(flags):
+            raise TypeErrorEx((str, Flag, Iterable[Union[Flag, str]]), flags, "flags")
+
         result_set = set()
         # 遍历一遍以收集所有要设置的标志对象
         for flag in flags:
@@ -384,10 +398,10 @@ class FlagGroup(metaclass=FlagGroupMeta):
 
         return result_set
 
-    def set(self, *flags: Union[str, Flag], set_parent_flag_automatically=True):
+    def set(self, flags: _flags_type, set_parent_flag_automatically=True):
         with self._work():  # 支持回滚
             # 遍历设置每一个收集到的标志对象
-            for flag in self.to_flag_objs(*flags):
+            for flag in self.to_flag_objs(flags):
                 # 检查兼容性
                 if flag not in self.__get_registered_flags():
                     raise IncompatibleFlagError(self, flag)
@@ -411,10 +425,10 @@ class FlagGroup(metaclass=FlagGroupMeta):
                 with self._lock:
                     self._flags.add(flag)
 
-    def unset(self, *flags: Union[str, Flag]):
+    def unset(self, flags: _flags_type):
         with self._work():  # 支持回滚
             # 遍历取消设置每一个收集到的标志对象
-            for flag in self.to_flag_objs(*flags):
+            for flag in self.to_flag_objs(flags):
                 # 检查要移除的标志是否被依赖
                 for f in self._flags - {flag}:
                     if flag in f.parents:

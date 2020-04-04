@@ -60,3 +60,11 @@ def get_traceback_text(ex_type, ex_obj, tb, *, limit=None):
         return None
 
     return ''.join(traceback.format_exception(ex_type, ex_obj, tb, limit=limit))
+
+
+def is_iterable(obj):
+    try:
+        iter(obj)
+        return True
+    except TypeError:
+        return False

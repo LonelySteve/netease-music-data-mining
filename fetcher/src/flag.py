@@ -6,7 +6,7 @@ from threading import RLock
 from typing import DefaultDict, FrozenSet, Iterable, List, Optional, Set, Union
 
 from .exceptions import TypeErrorEx
-from .util import is_iterable, repr_injector, void
+from .utils import is_iterable, repr_injector, void
 
 
 @repr_injector

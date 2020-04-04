@@ -5,7 +5,7 @@ from itertools import chain
 import pytest
 
 from src.flag import Flag, FlagGroup, TaskFlagGroup
-from src.util import void
+from src.utils import void
 from tests.utils import _test_flag_tuple, override_flag_registered
 
 

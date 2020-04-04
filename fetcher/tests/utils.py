@@ -29,7 +29,7 @@ def override_flag_registered(*flags: Union[Flag, str]):
         getattr(FlagGroup, "_FlagGroup__set_registered_flags")(set())
 
 
-test_flag_tuple = (
+_test_flag_tuple = (
     "test",
     " test ",
     "test1|test2",

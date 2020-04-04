@@ -3,7 +3,11 @@ import traceback
 from functools import partial
 from inspect import isfunction, isgenerator, ismethod
 from itertools import count, repeat
-from typing import Any, Callable
+from typing import Any, Callable, Generic, Optional, TypeVar
+
+T = TypeVar("T")
+
+void = object()
 
 
 def jump_step(*, start=0, stop=None, base=2, repeat_count=2):
@@ -22,14 +26,19 @@ def jump_step(*, start=0, stop=None, base=2, repeat_count=2):
         yield from repeat(base ** exp, repeat_count)
 
 
-def repr_injector(cls=None, filter_: Callable[[str, Any], bool] = None, format_dict=None):
+def repr_injector(
+    cls: Optional[T] = None,
+    filter_: Callable[[str, Any], bool] = None,
+    format_dict=None,
+) -> T:
     if cls is None:
         return partial(repr_injector, filter_=filter_, format_dict=format_dict)
 
     format_dict = {}
     filter_ = filter_ or (
         # 筛选不以 '_' 开头的非函数、方法、生成器成员
-        lambda k, v: not k.startswith("_") and not any(is_(v) for is_ in [isgenerator, isfunction, ismethod])
+        lambda k, v: not k.startswith("_")
+        and not any(is_(v) for is_ in [isgenerator, isfunction, ismethod])
     )
 
     def safe_get_value(obj, key):
@@ -41,7 +50,9 @@ def repr_injector(cls=None, filter_: Callable[[str, Any], bool] = None, format_d
 
     def __repr__(self):
 
-        display_attr_names = [key for key in dir(self) if filter_(key, safe_get_value(self, key))]
+        display_attr_names = [
+            key for key in dir(self) if filter_(key, safe_get_value(self, key))
+        ]
 
         attr_display_units = [
             f"{key}={format_dict.get(key, lambda v: '%r' % v)(safe_get_value(self, key))}"
@@ -59,7 +70,7 @@ def get_traceback_text(ex_type, ex_obj, tb, *, limit=None):
     if ex_type is None or ex_obj is None or tb is None:
         return None
 
-    return ''.join(traceback.format_exception(ex_type, ex_obj, tb, limit=limit))
+    return "".join(traceback.format_exception(ex_type, ex_obj, tb, limit=limit))
 
 
 def is_iterable(obj):

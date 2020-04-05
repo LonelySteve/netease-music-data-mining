@@ -1,5 +1,7 @@
 #!/usr/env python3
+import time
 from concurrent.futures import ThreadPoolExecutor
+from threading import Thread
 
 import pytest
 
@@ -438,8 +440,34 @@ class TestFlagGroup(object):
             flag_group_0 = FlagGroup("test")
             flag_group_1 = flag_group_0.copy()
 
-            # TODO 考虑实现 FlagGroup 的相等比较 
+            # TODO 考虑实现 FlagGroup 的相等比较
             # assert flag_group_0 == flag_group_1
 
             flag_group_1.has("test")
 
+    def test_get_event_by_flag(self):
+        with override_flag_registered("aaa|bbb"):
+
+            def foo():
+                time.sleep(0.1)
+                flag_group.set("aaa")
+                assert not flag_group.has("bbb")
+                flag_group.get_event_by_flag("bbb").wait()
+                assert flag_group.has("bbb")
+
+            def bar():
+                assert not flag_group.has("aaa")
+                flag_group.get_event_by_flag("aaa").wait()
+                assert flag_group.has("aaa")
+                time.sleep(0.1)
+                flag_group.set("bbb")
+
+            t1 = Thread(target=foo)
+            t2 = Thread(target=bar)
+
+            flag_group = FlagGroup()
+
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()

@@ -2,7 +2,7 @@
 from contextlib import contextmanager
 from functools import partial
 from itertools import chain
-from threading import RLock
+from threading import Event, RLock
 from typing import DefaultDict, FrozenSet, Generator, Iterable, List, Optional, Union
 
 from .exceptions import TypeErrorEx
@@ -244,7 +244,9 @@ class FlagGroup(metaclass=FlagGroupMeta):
     - 提供一种存储、管理一组标志的机制
     - 提供标志发生变化时回调已注册的可调用对象的能力
     - 继承此类，定义 Flag 类型的类成员以扩充支持的标志
+    - 内部维护一个事件（Event）字典，可以通过 ``get_event_by_flag`` 方法获取到相应的 ``Event`` 对象
     - 可定义互斥标志组
+
     """
 
     _LOCK = RLock()
@@ -254,6 +256,7 @@ class FlagGroup(metaclass=FlagGroupMeta):
         self._callbacks: DefaultDict[Flag, List[FlagGroupCallbackInfo]] = DefaultDict[
             Flag, List[FlagGroupCallbackInfo]
         ](list)
+        self._events: DefaultDict[Flag, Event] = DefaultDict[Flag, Event](Event)
 
         if flags:
             self.set(flags)
@@ -263,6 +266,9 @@ class FlagGroup(metaclass=FlagGroupMeta):
 
     def __repr__(self):
         return f"<{self.__class__.__name__} [{str(self)}]>"
+
+    def __call__(self, flag: Union[str, Flag]):
+        return self.get_event_by_flag(flag)
 
     def __or__(self, other):
         return self.__add__(other)
@@ -457,6 +463,22 @@ class FlagGroup(metaclass=FlagGroupMeta):
 
         return result_set
 
+    def get_event_by_flag(self, flag: Union[str, Flag]) -> Event:
+        """
+        获取相应标志的事件对象
+        
+        注意：不要手动修改返回的 Event 状态，即不要调用其 ``set()`` 或 ``clear()`` 方法，
+        这可能导致其内部状态与此标志组的相应 Flag 状态不一致，造成潜在的安全隐患
+        
+        :param flag: 要获取的事件对象的标志
+        :return: 事件对象，如果其 `is_set()` 为 True，则说明该标志在当前标志组已设置，反之未设置
+        :rtype: Event
+        """
+        if isinstance(flag, str):
+            flag = self.get_flag(flag)
+
+        return self._events[flag]
+
     def set(self, flags: _flags_type, set_parent_flag_automatically=True):
         """
         设置新标志到此标志组中
@@ -496,6 +518,8 @@ class FlagGroup(metaclass=FlagGroupMeta):
                 # RLock 获取锁之后加入新标志
                 with self._LOCK:
                     self._flags.add(flag)
+                # 设置相应的事件对象
+                self._events[flag].set()
 
     def unset(self, flags: _flags_type, remove_all_children=True):
         """
@@ -523,6 +547,8 @@ class FlagGroup(metaclass=FlagGroupMeta):
                 with self._LOCK:
                     if flag in self._flags:  # 允许取消设置一个已经未设置的标志
                         self._flags.remove(flag)
+                # 取消设置相应的事件对象
+                self._events[flag].clear()
 
     def emit(self, flag: Union[str, Flag], is_set: bool, *args, **kwargs):
         """

@@ -3,16 +3,7 @@ from contextlib import contextmanager
 from functools import partial
 from itertools import chain
 from threading import RLock
-from typing import (
-    DefaultDict,
-    FrozenSet,
-    Generator,
-    Iterable,
-    List,
-    Optional,
-    Set,
-    Union,
-)
+from typing import DefaultDict, FrozenSet, Generator, Iterable, List, Optional, Union
 
 from .exceptions import TypeErrorEx
 from .utils import is_iterable, void
@@ -397,7 +388,7 @@ class FlagGroup(metaclass=FlagGroupMeta):
             raise e
 
     def copy(self) -> "FlagGroup":
-        return FlagGroup(*self)
+        return FlagGroup(self)
 
     def any(self, flags: Iterable[Union[str, Flag]]):
         return bool(next((flag for flag in flags if flag in self), None))

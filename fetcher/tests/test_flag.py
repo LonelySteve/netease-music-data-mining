@@ -432,3 +432,14 @@ class TestFlagGroup(object):
 
             flag_group.unset(e, remove_all_children=True)
             assert len(flag_group) == 0
+
+    def test_copy(self):
+        with override_flag_registered("test"):
+            flag_group_0 = FlagGroup("test")
+            flag_group_1 = flag_group_0.copy()
+
+            # TODO 考虑实现 FlagGroup 的相等比较 
+            # assert flag_group_0 == flag_group_1
+
+            flag_group_1.has("test")
+

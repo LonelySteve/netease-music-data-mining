@@ -413,8 +413,22 @@ class TestFlagGroup(object):
         bbb = Flag(name="bbb")
         ccc = Flag(name="ccc", parents="aaa|bbb")
 
-        with override_flag_registered(aaa, bbb, ccc) as all_flags:
+        with override_flag_registered(aaa, bbb, ccc):
             flag_group = FlagGroup()
             flag_group.set(ccc)
 
             assert flag_group.all((aaa, bbb, ccc))
+
+    def test_unset_auto_remove(self):
+        a = Flag("a", parents="d")
+        b = Flag("b", parents="d")
+        c = Flag("c", parents="d")
+        d = Flag("d", parents="e")
+        e = Flag("e")
+
+        with override_flag_registered(a, b, c, d, e):
+            flag_group = FlagGroup("a|b|c|d|e")
+            assert flag_group.all((a, b, c, d, e))
+
+            flag_group.unset(e, remove_all_children=True)
+            assert len(flag_group) == 0

@@ -15,10 +15,9 @@ from typing import (
 )
 
 from .exceptions import TypeErrorEx
-from .utils import is_iterable, repr_injector, void
+from .utils import is_iterable, void
 
 
-@repr_injector
 class Flag(object):
     """
     标志类
@@ -39,11 +38,30 @@ class Flag(object):
 
     注意：Flag 类不会在构造时检查传入的父名称的有效性（仅做基本检查，如是否为空），这个过程交给调用方自行处理。
 
-    支持使用字符串与 Flag 实例进行比较：
+    对于参数完全一致的新 Flag 实例是相等的：
 
     >>> flag = Flag(name="aaa", aliases="bbb|ccc")
+    >>> assert flag == Flag(name="aaa", aliases=("bbb", "ccc"))
+
+    支持使用字符串与 Flag 实例进行比较：
+
     >>> assert flag == "aaa"
     >>> assert flag == "bbb" and flag == "ccc"
+
+    值得注意的是，由于 Python 没有 __req__，所以我无法控制字符串在等号左边的情形，这个时候会调用 str 的 __eq__ 方法，内部的实现肯定会返回 False
+
+    >>> "aaa" == flag
+    False
+
+    因此，``in`` 操作符正确使用的姿势是：
+
+    >>> flag in ["aaa", "bbb", "ccc"]
+    True
+
+    而不是：
+
+    >>> "aaa" in [flag, flag, flag]
+    False
 
     """
 
@@ -76,10 +94,11 @@ class Flag(object):
         self._parents = frozenset(parents)
 
     def __str__(self):
-        """优先返回主名称，其次返回所有别名"""
-        return (
-            self.name or f"{', '.join('%r (alias)' % alias for alias in self._aliases)}"
-        )
+        """优先返回主名称，其次返回第一个别名"""
+        return self.name or next(iter(self._aliases))
+
+    def __repr__(self):
+        return f"<{self.__class__.__name__} {str(self)}>"
 
     def __eq__(self, other):
         # 允许与字符串比较，只要字符串指定的名称存在于自己的所有名称里，就返回真
@@ -222,7 +241,6 @@ class FlagGroupCallbackInfo(object):
 _flags_type = Union[str, Flag, Iterable[Union[str, Flag]]]
 
 
-@repr_injector
 class FlagGroup(metaclass=FlagGroupMeta):
     """
     标志组类
@@ -250,7 +268,10 @@ class FlagGroup(metaclass=FlagGroupMeta):
             self.set(flags)
 
     def __str__(self):
-        return f'[{"|".join(f"{flag!s}" for flag in self._flags)}]'
+        return f'{"|".join(f"{flag!s}" for flag in self._flags)}'
+
+    def __repr__(self):
+        return f"<{self.__class__.__name__} [{str(self)}]>"
 
     def __or__(self, other):
         return self.__add__(other)
@@ -485,22 +506,28 @@ class FlagGroup(metaclass=FlagGroupMeta):
                 with self._LOCK:
                     self._flags.add(flag)
 
-    def unset(self, flags: _flags_type, remove_parent_flags_all_children=False):
+    def unset(self, flags: _flags_type, remove_all_children=True):
         """
         将某些标志从此标志组移除
 
         注意：如果所移除的标志有父标志，且父标志存在于当前标志组中，须先 `unset` 依赖于父标志的所有子标志，此功能未实现
         
         :param flags: 要移除的标志
-        :param remove_parent_flags_all_children: 如果为 True，在移除带有父标志的标志时，会先移除依赖于父标志的其他子标志，再移除父标志，最后移除自己，默认为 False
+        :param remove_all_children: 如果为 True，在移除标志时，会先递归移除依赖自己的子标志，再移除自己，默认为 True
         """
         with self._work():  # 支持回滚
             # 遍历取消设置每一个收集到的标志对象
             for flag in self.to_flag_objs(flags):
-                # 检查要移除的标志是否被依赖
-                for flag_ in self._flags - {flag}:
-                    if flag in flag_.parents:
-                        raise ValueError(f"{flag!r} is dependent on {flag_!r}")
+                # 检查要移除的标志的所有子标志，如果有子标志，且 remove_all_children 参数为 True, 则移除它，否则抛出异常
+                for other_flag in self._flags - {flag}:
+                    for other_flag_parent_name in other_flag.parents:
+                        if other_flag_parent_name in flag.names:
+                            if remove_all_children:
+                                self.unset(
+                                    other_flag, remove_all_children=remove_all_children
+                                )
+                            else:
+                                raise ValueError(f"{other_flag} depends on {flag}")
                 # RLock 获取锁之后移除标志
                 with self._LOCK:
                     if flag in self._flags:  # 允许取消设置一个已经未设置的标志

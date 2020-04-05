@@ -3,7 +3,16 @@ from contextlib import contextmanager
 from functools import partial
 from itertools import chain
 from threading import RLock
-from typing import DefaultDict, FrozenSet, Iterable, List, Optional, Set, Union
+from typing import (
+    DefaultDict,
+    FrozenSet,
+    Generator,
+    Iterable,
+    List,
+    Optional,
+    Set,
+    Union,
+)
 
 from .exceptions import TypeErrorEx
 from .utils import is_iterable, repr_injector, void
@@ -11,6 +20,33 @@ from .utils import is_iterable, repr_injector, void
 
 @repr_injector
 class Flag(object):
+    """
+    标志类
+    -----
+    标志主要提供一组信息，用来描述自己的名称（或别名），或提供自己依赖的父标志名称（或别名）。
+
+    这是一个会被冻结的类，一旦构造出 Flag 对象，它的属性便无法被赋值（只读），
+    可以通过 ``replace`` 方法替换对象的相应的值并生成一个新的 Flag 对象绕过这个限制。
+
+    关于名称（name）和别名（aliases）：
+
+    - 两者差别不大，传入的参数（或经过分割）都会被去掉前后空白
+    - name 之中不能包含 '|' 字符，而 aliases 可以，并且 aliases 包含 '|' 字符时，将自动分割以提取多个别名
+    - 当对 Flag 的实例使用 ``str()`` 内建方法时，如果名称不为空则优先返回名称，否则返回所有别名
+    - 无论如何，都可以从 ``names`` 属性中获取标志可用的名称或别名
+
+    父名称（parents）类似别名（aliases），在构造时同样支持使用 '|' 进行分割的写法，也可以传入可迭代出字符串的对象以指定
+
+    注意：Flag 类不会在构造时检查传入的父名称的有效性（仅做基本检查，如是否为空），这个过程交给调用方自行处理。
+
+    支持使用字符串与 Flag 实例进行比较：
+
+    >>> flag = Flag(name="aaa", aliases="bbb|ccc")
+    >>> assert flag == "aaa"
+    >>> assert flag == "bbb" and flag == "ccc"
+
+    """
+
     __slots__ = ("_parents", "_aliases", "_name")
 
     def __init__(
@@ -74,7 +110,7 @@ class Flag(object):
 
         name = name.strip()
         if not name:
-            raise ValueError("name can not be empty.")
+            raise ValueError("the name or alias can not be empty.")
 
         if "|" in name:
             raise ValueError(
@@ -137,27 +173,20 @@ class Flag(object):
 
 class FlagGroupMeta(type):
     def __new__(mcs, name, bases, attrs, **kwargs):
-        # 收集本类定义的标志
+        # 收集当前构造的类对象定义的标志
         cls_new_flags = []
         # 遍历每个属性，对于每一个属性值为 Flag 类型的键值对：
         # - 获取新的 flag 对象（尝试替换旧 flag 对象的 name 属性）
-        # - 添加至 new_flags 收集起来
         # - 重设 cls 对应键的值
+        # - 添加至 new_flags 收集起来
         for key, value in attrs.copy().items():
             if isinstance(value, Flag):
                 new_flag = attrs[key] = value.replace(name=value.name or key)
                 cls_new_flags.append(new_flag)
 
         cls = super().__new__(mcs, name, bases, attrs)
+        # 获取当前构造的类的 register 方法，并注册
         cls_register_method = getattr(cls, "register")
-        # 先注册基类的
-        for base in bases[-1::-1]:
-            base_flags = getattr(
-                base, f"_{cls.__class__.__name__}__get_registered_flags", lambda: None
-            )()
-            if base_flags:
-                cls_register_method(base_flags)
-        # 再注册本类的
         cls_register_method(cls_new_flags)
 
         return cls
@@ -197,26 +226,21 @@ _flags_type = Union[str, Flag, Iterable[Union[str, Flag]]]
 class FlagGroup(metaclass=FlagGroupMeta):
     """
     标志组类
-    -----
-    - 线程安全
+    -------
+    标志组主要是一种存储、管理一组标志（Flag 类的实例）的容器，并且在状态发生改变时，拥有一个简单的回调函数的功能。
+
+    下面是所有特性：
+
+    - 保证设置新的标志或移除旧的标志的线程安全
     - 提供一种存储、管理一组标志的机制
     - 提供标志发生变化时回调已注册的可调用对象的能力
     - 继承此类，定义 Flag 类型的类成员以扩充支持的标志
+    - 可定义互斥标志组
     """
 
-    _lock = RLock()
+    _LOCK = RLock()
 
     def __init__(self, flags: Optional[_flags_type] = None):
-        """
-        实例化 Flag
-        ----------
-        - 构造 Flag 实例所用的项必须已经存在于此 Flag 类已注册的项之中，否则会引发 IncompatibleFlagItemError 异常
-
-        >>> FlagGroup.register(Flag(name="233"))
-        >>> FlagGroup("233")
-
-        :param flags:
-        """
         self._flags = set()
         self._callbacks: DefaultDict[Flag, List[FlagGroupCallbackInfo]] = DefaultDict[
             Flag, List[FlagGroupCallbackInfo]
@@ -316,6 +340,15 @@ class FlagGroup(metaclass=FlagGroupMeta):
 
     @classmethod
     def register(cls, flags: Iterable[Flag]):
+        """
+        注册新的 Flag 实例
+
+        建议使用继承 FlagGroup 的方式来扩充支持的标志，而不是调用此方法直接注册
+        
+        :param flags: 要注册的标志实例
+        :type flags: Iterable[Flag]
+        :raises ValueError: 标志实例缺少可用名称时抛出
+        """
         # 检查父名称是否有效
         cls._check_parent(flags)
 
@@ -323,14 +356,14 @@ class FlagGroup(metaclass=FlagGroupMeta):
             if not flag.names:
                 raise ValueError(f"{flag!r} must have at least one name or alias")
 
-            _flags = cls.__get_registered_flags()
             # 检查名称和别名是否冲突
             cls._check_flag_conflict(flag)
             # 检查新加入该标志是否会导致环状引用问题
             cls._check_loop(flag, flags)
-
-            _flags.add(flag)
-            cls.__set_registered_flags(_flags)
+            # 将要注册的 flag 对象加入到当前已注册的标志中
+            # NOTE: 这里不需要加锁，Python 的容器类型是线程安全的，何况对于 set 而言，出现重复并没有什么关系
+            flags_ = cls.__get_this_cls_registered_flags()
+            flags_.add(flag)
 
     @contextmanager
     def _work(self):
@@ -338,17 +371,17 @@ class FlagGroup(metaclass=FlagGroupMeta):
         try:
             yield self
         except Exception as e:
-            with self._lock:
+            with self._LOCK:
                 self._flags = backup
             raise e
 
     def copy(self) -> "FlagGroup":
         return FlagGroup(*self)
 
-    def any(self, flags: Iterable[Flag]):
+    def any(self, flags: Iterable[Union[str, Flag]]):
         return bool(next((flag for flag in flags if flag in self), None))
 
-    def all(self, flags: Iterable[Flag]):
+    def all(self, flags: Iterable[Union[str, Flag]]):
         return all((flag in self) for flag in flags)
 
     @classmethod
@@ -363,13 +396,10 @@ class FlagGroup(metaclass=FlagGroupMeta):
         如果仍未找到，抛出 `ValueError`
         
         :param name: 要寻找的 Flag 对象名称，可以是别名
-        :type name: str
         :param fallback_flags: 备用 Flags, defaults to None
-        :type fallback_flags: Optional[Iterable], optional
         :raises TypeErrorEx: 传入的 name 参数不为 str 类型
         :raises ValueError: 当前类对象中没有符合指定名称的 `Flag` 对象，且即使提供了 `fallback_flags`，也没有找到符合的 `Flag` 对象时抛出
         :return: `Flag` 对象
-        :rtype: Flag
         """
         if not isinstance(name, str):
             raise TypeErrorEx(str, name, "name")
@@ -377,7 +407,7 @@ class FlagGroup(metaclass=FlagGroupMeta):
         name = name.strip()
 
         result = next(
-            (flag for flag in cls.__get_registered_flags() if name in flag.names), None
+            (flag for flag in cls.__get_registered_flags() if name in flag.names), None,
         )
 
         if result is not None:
@@ -416,12 +446,25 @@ class FlagGroup(metaclass=FlagGroupMeta):
         return result_set
 
     def set(self, flags: _flags_type, set_parent_flag_automatically=True):
+        """
+        设置新标志到此标志组中
+
+        以下几种情况均会抛出 ``ValueError``：
+
+        - 当尝试设置一个此标志组继承链上没有注册的标志名时：unknown name
+        - 当尝试设置一个此标志组继承链上没有注册的标志对象时：not compatible
+        - 当 set_parent_flag_automatically 为 False，而此标志组中缺少某个标志的父标志时：not exist
+        - 当所设置的标志与互斥规则冲突时：cannot coexist
+        
+        :param flags: 要设置的标志
+        :param set_parent_flag_automatically: 是否尝试为缺少父标志的标志设置相应的父标志，默认为 True
+        """
         with self._work():  # 支持回滚
             # 遍历设置每一个收集到的标志对象
             for flag in self.to_flag_objs(flags):
                 # 检查兼容性
                 if flag not in self.__get_registered_flags():
-                    raise ValueError(f"{flag} is not compatible with {self}")
+                    raise ValueError(f"{flag!r} is not compatible with {self!r}")
                 # 检查父引用，有必要的话，设置父标志到当前标志组
                 for parent_name in flag.parents:
                     if (
@@ -439,10 +482,18 @@ class FlagGroup(metaclass=FlagGroupMeta):
                 if conflict_group is not None:
                     raise ValueError(f"{conflict_group!r} cannot coexist.")
                 # RLock 获取锁之后加入新标志
-                with self._lock:
+                with self._LOCK:
                     self._flags.add(flag)
 
-    def unset(self, flags: _flags_type):
+    def unset(self, flags: _flags_type, remove_parent_flags_all_children=False):
+        """
+        将某些标志从此标志组移除
+
+        注意：如果所移除的标志有父标志，且父标志存在于当前标志组中，须先 `unset` 依赖于父标志的所有子标志，此功能未实现
+        
+        :param flags: 要移除的标志
+        :param remove_parent_flags_all_children: 如果为 True，在移除带有父标志的标志时，会先移除依赖于父标志的其他子标志，再移除父标志，最后移除自己，默认为 False
+        """
         with self._work():  # 支持回滚
             # 遍历取消设置每一个收集到的标志对象
             for flag in self.to_flag_objs(flags):
@@ -451,11 +502,17 @@ class FlagGroup(metaclass=FlagGroupMeta):
                     if flag in flag_.parents:
                         raise ValueError(f"{flag!r} is dependent on {flag_!r}")
                 # RLock 获取锁之后移除标志
-                with self._lock:
+                with self._LOCK:
                     if flag in self._flags:  # 允许取消设置一个已经未设置的标志
                         self._flags.remove(flag)
 
     def emit(self, flag: Union[str, Flag], is_set: bool, *args, **kwargs):
+        """
+        触发设置或取消设置标志的动作，然后尝试使用传入的可变参数回调已注册的可调用对象
+        
+        :param flag: 要设置或取消设置的标志
+        :param is_set: 如果为 True，则设置 ``flag`` 参数指定的标志，否则取消设置该标志
+        """
         if is_set:
             self.set(flag)
         else:
@@ -482,33 +539,51 @@ class FlagGroup(metaclass=FlagGroupMeta):
                 # 计数完成，无需在此调用该注册回调，移除它
                 self._callbacks.pop(flag)
 
-    def set_emit(self, item: Union[str, Flag], *args, **kwargs):
-        self.emit(item, True, *args, **kwargs)
+    def set_emit(self, flag: Union[str, Flag], *args, **kwargs):
+        """
+        触发设置标志的动作，然后尝试使用传入的可变参数回调已注册的可调用对象
+        
+        :param flag: 要设置的标志
+        """
+        self.emit(flag, True, *args, **kwargs)
 
-    def unset_emit(self, item: Union[str, Flag], *args, **kwargs):
-        self.emit(item, False, *args, **kwargs)
+    def unset_emit(self, flag: Union[str, Flag], *args, **kwargs):
+        """
+        触发取消设置标志的动作，然后尝试使用传入的可变参数回调已注册的可调用对象
+        
+        :param flag: 要取消设置的标志
+        """
+        self.emit(flag, False, *args, **kwargs)
 
     def when(
         self,
-        item: Union[str, Flag],
+        flag: Union[str, Flag],
         callback=None,
         *,
         is_set: Optional[bool] = None,
         max_call_count=-1,
     ):
+        """
+        注册回调函数
+        
+        :param flag: 要绑定的标志
+        :param callback: 回调函数，默认为 None
+        :param is_set: 标志的触发状态，为 True 是设置时触发，为 False 是取消设置时触发，为 None 则发生前两者动作时都会触发，默认为 None
+        :param max_call_count: 最大调用次数，为 -1 （或为负数时）时不限制，默认为 -1
+        """
         if callback is None:
             return partial(
-                self.when, item, is_set=is_set, max_call_count=max_call_count
+                self.when, flag, is_set=is_set, max_call_count=max_call_count
             )
 
         if not isinstance(max_call_count, int):
             raise TypeErrorEx(int, max_call_count, "max_call_count")
-        if isinstance(item, str):
-            item = self.get_flag(item)
-        if not isinstance(item, Flag):
-            raise TypeErrorEx((str, Flag), item, "item")
+        if isinstance(flag, str):
+            flag = self.get_flag(flag)
+        if not isinstance(flag, Flag):
+            raise TypeErrorEx((str, Flag), flag, " flag")
 
-        self._callbacks[item].append(
+        self._callbacks[flag].append(
             FlagGroupCallbackInfo(
                 callback, is_set=is_set, max_call_count=max_call_count
             )
@@ -516,23 +591,23 @@ class FlagGroup(metaclass=FlagGroupMeta):
 
         return callback
 
-    def on_set(self, item: Union[str, Flag], callback=None):
-        return self.when(item, is_set=True, callback=callback)
+    def on_set(self, flag: Union[str, Flag], callback=None):
+        return self.when(flag, is_set=True, callback=callback)
 
-    def once_set(self, item: Union[str, Flag], callback=None):
-        return self.when(item, is_set=True, max_call_count=1, callback=callback)
+    def once_set(self, flag: Union[str, Flag], callback=None):
+        return self.when(flag, is_set=True, max_call_count=1, callback=callback)
 
-    def on_unset(self, item: Union[str, Flag], callback=None):
-        return self.when(item, is_set=False, callback=callback)
+    def on_unset(self, flag: Union[str, Flag], callback=None):
+        return self.when(flag, is_set=False, callback=callback)
 
-    def once_unset(self, item: Union[str, Flag], callback=None):
-        return self.when(item, is_set=False, max_call_count=1, callback=callback)
+    def once_unset(self, flag: Union[str, Flag], callback=None):
+        return self.when(flag, is_set=False, max_call_count=1, callback=callback)
 
-    def on(self, item: Union[str, Flag], callback=None):
-        return self.when(item, callback=callback)
+    def on(self, flag: Union[str, Flag], callback=None):
+        return self.when(flag, callback=callback)
 
-    def once(self, item: Union[str, Flag], callback=None):
-        return self.when(item, callback=callback, max_call_count=1)
+    def once(self, flag: Union[str, Flag], callback=None):
+        return self.when(flag, callback=callback, max_call_count=1)
 
     def _get_mutex_groups(self):
         return []
@@ -544,16 +619,62 @@ class FlagGroup(metaclass=FlagGroupMeta):
             if len(conflict_group) > 1:
                 return conflict_group
 
-    @classmethod
-    def __get_registered_flags(cls) -> Set[Flag]:
-        return getattr(cls, "_registered_flags", set())
+    @staticmethod
+    def _get_registered_flags_attr_name(cls_):
+        attr_base_name = f"__registered_flags"
+        return f"_{cls_.__name__}{attr_base_name}"
 
     @classmethod
-    def __set_registered_flags(cls, registered_flags: Set[Flag]):
-        setattr(cls, "_registered_flags", registered_flags)
+    def __get_registered_flags(cls) -> Generator[Flag, None, None]:
+        for cls_ in getattr(cls, "__mro__"):
+            cls_registered_flags = getattr(
+                cls_, cls._get_registered_flags_attr_name(cls_), None
+            )
+
+            if cls_registered_flags:
+                yield from cls_registered_flags
+
+    @classmethod
+    def __get_this_cls_registered_flags(cls):
+        attr_name = cls._get_registered_flags_attr_name(cls)
+
+        if not hasattr(cls, attr_name):
+            setattr(cls, attr_name, set())
+
+        return getattr(cls, attr_name)
 
 
 class TaskFlagGroup(FlagGroup):
+    """
+    任务标志组
+    --------
+    提供了一些任务流程中常见的标志，并重写了互斥规则
+
+    提供的标志
+    ~~~~~~~~~ 
+
+    - pending: 等待中
+    - running: 运行中
+    - stopping: 停止中
+    - canceling: 取消中
+    - stopping_with_exception: 因为异常而停止
+    - stopping_with_canceled: 因为取消而停止
+
+    互斥规则
+    ~~~~~~~
+    
+    每一个规则之中的任何一个不能与此规则中其他标志同时存在
+
+    - pending, running, stopping, canceling
+    - stopping_with_exception, stopping_with_canceled
+
+    父标志依赖
+    ~~~~~~~~~
+
+    - stopping_with_exception -> stopping
+    - stopping_with_canceled -> stopping
+    """
+
     pending = Flag(aliases="pend")
     running = Flag(aliases="run")
     stopping = Flag(aliases="stop")

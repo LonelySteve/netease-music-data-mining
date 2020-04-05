@@ -1,32 +1,36 @@
 #!/usr/env python3
 from contextlib import contextmanager
-from itertools import chain
-from typing import Union
+from typing import Set, Union
 
 from src.exceptions import TypeErrorEx
 from src.flag import Flag, FlagGroup
 
 
 @contextmanager
-def override_flag_registered(*flags: Union[Flag, str]):
-    all_flags = []
+def override_flag_registered(*flags: Union[Flag, str], flag_group_cls=FlagGroup):
+    original_flags = getattr(
+        flag_group_cls, f"_{flag_group_cls.__name__}__get_this_cls_registered_flags"
+    )()
+    original_flags_backup = original_flags.copy()
+
+    all_flags = set()
 
     for flag in flags:
         if isinstance(flag, Flag):
-            all_flags.append(flag)
+            all_flags.add(flag)
         elif isinstance(flag, str):
-            for flag_ in flag.split("|"):
-                all_flags.append(Flag(flag_))
+            all_flags.update(Flag(flag_) for flag_ in flag.split("|"))
         else:
             raise TypeErrorEx((Flag, str), flag)
 
-    FlagGroup.register(all_flags)
+    flag_group_cls.register(all_flags)
 
     try:
         yield all_flags
     finally:
-        # 强行调用私有方法进行清理
-        getattr(FlagGroup, "_FlagGroup__set_registered_flags")(set())
+        # 恢复原注册项
+        original_flags.clear()
+        original_flags.update(original_flags_backup)
 
 
 _test_flag_tuple = (

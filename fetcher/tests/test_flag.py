@@ -1,6 +1,5 @@
 #!/usr/env python3
 from concurrent.futures import ThreadPoolExecutor
-from itertools import chain
 
 import pytest
 
@@ -256,8 +255,8 @@ class TestFlagGroup(object):
 
     def test_conflict_items(self):
         with pytest.raises(ValueError, match="conflict"):
-            with override_flag_registered("test|test"):
-                ...
+            with override_flag_registered("test"):
+                FlagGroup.register({Flag("test")})
 
         with override_flag_registered("aaa"):
             with pytest.raises(ValueError, match="conflict"):
@@ -375,3 +374,47 @@ class TestFlagGroup(object):
 
             class _TestFlagGroup(FlagGroup):
                 aaa = Flag(parents="bbb")
+
+    def test_inherit_flag_group(self):
+        class _TestFlagGroup(FlagGroup):
+            aaa = Flag()
+            bbb = Flag()
+
+        flag_group = _TestFlagGroup(("aaa", "bbb"))
+
+        assert flag_group.all(("aaa", "bbb"))
+
+        class _TestFlagGroupEx(_TestFlagGroup):
+            ccc = Flag()
+
+        flag_group_ex = _TestFlagGroupEx(("aaa", "bbb", "ccc"))
+
+        assert flag_group_ex.all(("aaa", "bbb", "ccc"))
+
+        class _TestFlagGroupEx2(_TestFlagGroup):
+            ddd = Flag()
+
+        flag_group_ex2 = _TestFlagGroupEx2(("aaa", "bbb", "ddd"))
+
+        assert flag_group_ex2.all(("aaa", "bbb", "ddd"))
+
+        flag_group += _TestFlagGroupEx.aaa
+        flag_group_ex += _TestFlagGroup.aaa
+        flag_group_ex2 += _TestFlagGroupEx2.aaa
+
+        with pytest.raises(ValueError, match="compatible"):
+            flag_group += _TestFlagGroupEx.ccc
+
+        with pytest.raises(ValueError, match="compatible"):
+            flag_group_ex2 += _TestFlagGroupEx.ccc
+
+    def test_set_auto_set_parents(self):
+        aaa = Flag(name="aaa")
+        bbb = Flag(name="bbb")
+        ccc = Flag(name="ccc", parents="aaa|bbb")
+
+        with override_flag_registered(aaa, bbb, ccc) as all_flags:
+            flag_group = FlagGroup()
+            flag_group.set(ccc)
+
+            assert flag_group.all((aaa, bbb, ccc))

@@ -1,5 +1,6 @@
 #!/usr/env python3
 from contextlib import contextmanager
+from functools import partial
 from itertools import chain
 from operator import and_, or_, xor
 from threading import Condition
@@ -443,16 +444,44 @@ class FlagGroup(EmitterMixin, metaclass=FlagGroupMeta):
             flags_ = cls.__get_this_cls_registered_flags()
             flags_.add(flag)
 
-    def _wait(self, flag: Union[str, Flag], timeout=None, reverse: bool = False):
-        predicate = lambda: reverse == self.has(flag)  # 实际上是异或
+    def wait_for(self, predicate: Callable[["FlagGroup"], bool], timeout=None):
+        """
+        当指定谓词不成立时等待，当此标志组的存储的标志发生变化时会再次检查谓词是否成立，如果仍然不成立则继续等待，依次类推。
+
+        可以指定一个超时时间，如果等待时间超过超时时间，无论如何会返回，返回的结果是此时谓词的执行结果。
+
+        注意：指定谓词时请尽量选择使用传入的 FlagGroup 对象参数进行判断，虽然不使用这个参数也是可以的，但是有可能会导致未知 BUG
+
+        :param predicate: 指定谓词
+        :param timeout: 超时时间
+        :return: 谓词的执行结果，当 timeout 为 None 时，方法执行会一直阻塞至谓词执行结果放回 True 为止，故此时的返回值一定为 True
+        """
+        pred = partial(predicate, self)
 
         with self._cond:
-            return self._cond.wait_for(predicate, timeout=timeout)
+            return self._cond.wait_for(pred, timeout=timeout)
+
+    def _wait(self, flag: Union[str, Flag], timeout=None, reverse: bool = False):
+        return self.wait_for(lambda self_: reverse == self_.has(flag), timeout=timeout)
 
     def wait(self, flag: Union[str, Flag], timeout=None):
+        """
+        当指定的标志存在于此标志组中时等待
+
+        :param flag: 指定的标志
+        :param timeout: 超时时间
+        :return:
+        """
         return self._wait(flag, timeout=timeout, reverse=False)
 
     def no_wait(self, flag: Union[str, Flag], timeout=None):
+        """
+        当指定的标志不存在于此标志组中时等待
+
+        :param flag: 指定的标志
+        :param timeout: 超时时间
+        :return:
+        """
         return self._wait(flag, timeout=timeout, reverse=True)
 
     @contextmanager

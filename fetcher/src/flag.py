@@ -464,7 +464,7 @@ class FlagGroup(EmitterMixin, metaclass=FlagGroupMeta):
     def _wait(self, flag: Union[str, Flag], timeout=None, reverse: bool = False):
         return self.wait_for(lambda self_: reverse == self_.has(flag), timeout=timeout)
 
-    def wait(self, flag: Union[str, Flag], timeout=None):
+    def wait_has(self, flag: Union[str, Flag], timeout=None):
         """
         当指定的标志存在于此标志组中时等待
 
@@ -474,7 +474,7 @@ class FlagGroup(EmitterMixin, metaclass=FlagGroupMeta):
         """
         return self._wait(flag, timeout=timeout, reverse=False)
 
-    def no_wait(self, flag: Union[str, Flag], timeout=None):
+    def wait_has_not(self, flag: Union[str, Flag], timeout=None):
         """
         当指定的标志不存在于此标志组中时等待
 

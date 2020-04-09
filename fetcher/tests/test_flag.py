@@ -80,14 +80,14 @@ class TestFlag(object):
     @pytest.mark.parametrize(
         "value",
         (
-                "test",
-                " test",
-                "test ",
-                " test ",
-                "for test",
-                " for test",
-                "for test ",
-                " for test ",
+            "test",
+            " test",
+            "test ",
+            " test ",
+            "for test",
+            " for test",
+            "for test ",
+            " for test ",
         ),
     )
     def test_standardized_name(self, value):
@@ -182,11 +182,13 @@ class TestFlagGroup(object):
 
     def test_check_loop(self):
         with pytest.raises(ValueError, match="aaa<-bbb<-aaa"):
+
             class _TestFlagGroup_0(FlagGroup):
                 aaa = Flag(parents="bbb")
                 bbb = Flag(parents="aaa")
 
         with pytest.raises(ValueError, match="aaa<-ccc<-bbb<-aaa"):
+
             class _TestFlagGroup_1(FlagGroup):
                 aaa = Flag(parents="bbb")
                 bbb = Flag(parents="ccc")
@@ -197,8 +199,9 @@ class TestFlagGroup(object):
         # - aaa<-ccc<-bbb<-aaa
         # 两种结果均是正确的，由于标志组采用集合进行内部实现，所以具体会抛出哪种成环结果并不确定，两种均有可能
         with pytest.raises(
-                ValueError, match=r"(?:bbb<-ccc<-bbb)|(?:aaa<-ccc<-bbb<-aaa)"
+            ValueError, match=r"(?:bbb<-ccc<-bbb)|(?:aaa<-ccc<-bbb<-aaa)"
         ):
+
             class _TestFlagGroup_2(FlagGroup):
                 aaa = Flag(parents="bbb")
                 bbb = Flag(parents="ccc")
@@ -349,15 +352,18 @@ class TestFlagGroup(object):
             FlagGroup.register([Flag("aaa")])
 
         with pytest.raises(ValueError, match="conflict"):
+
             class _TestFlagGroup(FlagGroup):
                 aaa = Flag()
                 ggg = Flag()
 
         with pytest.raises(ValueError, match="conflict"):
+
             class _TestFlagGroupAlias(FlagGroup):
                 ggg = Flag(aliases="aaa")
 
         with pytest.raises(ValueError, match="invalid"):
+
             class _TestFlagGroupParents(FlagGroup):
                 ggg = Flag(parents="hhh")
 
@@ -430,19 +436,19 @@ class TestFlagGroup(object):
         assert flag_group_0.equals(flag_group_1, strict=False)
         assert not flag_group_0.equals(flag_group_1, strict=True)
 
-    def test_no_wait(self, flags):
+    def test_wait_has_not(self, flags):
         flag_group = FlagGroup()
 
         def foo():
             time.sleep(0.1)
             flag_group.set("aaa")
             assert flag_group.flags == {flags["aaa"]}
-            flag_group.no_wait("bbb")
+            flag_group.wait_has_not("bbb")
             assert flag_group.flags == {flags["aaa"], flags["bbb"]}
 
         def bar():
             assert flag_group.flags == set()
-            flag_group.no_wait("aaa")
+            flag_group.wait_has_not("aaa")
             assert flag_group.flags == {flags["aaa"]}
             time.sleep(0.1)
             flag_group.set("bbb")
@@ -457,19 +463,19 @@ class TestFlagGroup(object):
             t1.join()
             t2.join()
 
-    def test_wait(self, flags):
+    def test_wait_has(self, flags):
         flag_group = FlagGroup("aaa|bbb")
 
         def foo():
             time.sleep(0.1)
             flag_group.unset("aaa")
             assert flag_group.flags == {flags["bbb"]}
-            flag_group.wait("bbb")
+            flag_group.wait_has("bbb")
             assert flag_group.flags == set()
 
         def bar():
             assert flag_group.flags == {flags["aaa"], flags["bbb"]}
-            flag_group.wait("aaa")
+            flag_group.wait_has("aaa")
             assert flag_group.flags == {flags["bbb"]}
             time.sleep(0.1)
             flag_group.unset("bbb")

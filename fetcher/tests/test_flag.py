@@ -1,92 +1,119 @@
 #!/usr/env python3
 import time
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
+from itertools import combinations
+from operator import and_, or_, xor
 from threading import Thread
 
 import pytest
+from pyee import BaseEventEmitter
 
 from src.flag import Flag, FlagGroup, TaskFlagGroup
 from src.utils import void
-from tests.utils import _test_flag_tuple, override_flag_registered
+
+from .utils import assert_time_cost
 
 
 class TestFlag(object):
-    def test_construction(self):
-        Flag()
-        Flag(name="aaa")
-        Flag(name="123")
-        Flag(name="bbb", parents="asd|asd")
-        Flag(parents="777", aliases="888")
-        Flag(name="cccc", parents="asd asd", aliases="asd |qwerty| aaa")
-        Flag(name="", parents="", aliases="")  # 这是被允许的，等价于填 None
+    _test_init_common = (
+        "",
+        None,
+        "aaa",
+        " aaa ",
+        "aaa|aaa",
+        " aaa | aaa ",
+        "aaa|bbb",
+        " aaa | bbb ",
+        ("aaa",),
+        ("aaa", "aaa"),
+        (" aaa ",),
+        (" aaa ", " aaa "),
+        ("aaa", "bbb"),
+        (" aaa ", " bbb "),
+    )
+    _test_init_raise_value_error = (None, "aaa|", "|bbb")
 
-    @pytest.mark.parametrize("value", ("", " ", "|", " |", "| ", " | ", "   "))
-    def test_standardized_name_invalid_case(self, value):
-        match_content = "|" if "|" in value else "empty"
-        with pytest.raises(ValueError, match=match_content):
-            Flag.standardized_name(value)
+    @pytest.mark.parametrize("name", ("aaa", None, "", " aaa", "aaa ", " aaa "))
+    @pytest.mark.parametrize("parents", _test_init_common)
+    @pytest.mark.parametrize("aliases", _test_init_common)
+    def test_init(self, name, parents, aliases):
+        flag = Flag(name=name, parents=parents, aliases=aliases)
+
+        if not name:
+            assert flag.name is None
+        if not parents:
+            assert flag.parents == frozenset()
+        if not aliases:
+            assert flag.aliases == frozenset()
+
+        if name:
+            assert flag.name == name.strip()
+        if parents:
+            if isinstance(parents, str):
+                assert flag.parents == frozenset(
+                    item.strip() for item in parents.split("|")
+                )
+            else:
+                assert flag.parents == frozenset(item.strip() for item in parents)
+        if aliases:
+            if isinstance(aliases, str):
+                assert flag.aliases == frozenset(
+                    item.strip() for item in aliases.split("|")
+                )
+            else:
+                assert flag.aliases == frozenset(item.strip() for item in aliases)
+
+    @pytest.mark.parametrize(
+        "name", (None, " ", "  ", "|", " |", "| ", "aaa|", "aaa|bbb")
+    )
+    @pytest.mark.parametrize("parents", _test_init_raise_value_error)
+    @pytest.mark.parametrize("aliases", _test_init_raise_value_error)
+    def test_init_raise_value_error(self, name, parents, aliases):
+
+        if all(arg is None for arg in [name, parents, aliases]):
+            pytest.skip("所有参数均为 None，为正常情况，不会抛出异常")
+
+        with pytest.raises(ValueError):
+            Flag(name=name, parents=parents, aliases=aliases)
 
     @pytest.mark.parametrize(
         "value",
         (
-            "test",
-            " test",
-            "test ",
-            " test ",
-            "for test",
-            " for test",
-            "for test ",
-            " for test ",
+                "test",
+                " test",
+                "test ",
+                " test ",
+                "for test",
+                " for test",
+                "for test ",
+                " for test ",
         ),
     )
-    def test_standardized_name_valid_case(self, value):
+    def test_standardized_name(self, value):
         assert Flag.standardized_name(value) == value.strip()
 
-    @pytest.mark.parametrize("name", ("test", " aaa", "bbb ", " ccc ", None))
-    @pytest.mark.parametrize(
-        "aliases", ("test", " aaa", "bbb ", " ddd ", "aaa|bbb", None)
-    )
+    @pytest.mark.parametrize("value", ("", " ", "|", " |", "| ", " | ", "   "))
+    def test_standardized_name_raise_value_error(self, value):
+        match_content = "|" if "|" in value else "empty"
+        with pytest.raises(ValueError, match=match_content):
+            Flag.standardized_name(value)
+
+    @pytest.mark.parametrize("name", ("aaa", None, ""))
+    @pytest.mark.parametrize("aliases", ("aaa", "aaa|bbb", ("aaa", "bbb"), None, ""))
     def test_names_property(self, name, aliases):
         flag = Flag(name=name, aliases=aliases)
 
         correct_cases = set()
-        if name is not None:
-            correct_cases.add(name.strip())
-        if aliases is not None:
-            correct_cases.update(item.strip() for item in aliases.split("|"))
+        if name:
+            correct_cases.add(name)
+        if aliases:
+            if isinstance(aliases, str):
+                correct_cases.update(alias.strip() for alias in aliases.split("|"))
+            else:
+                correct_cases.update(alias.strip() for alias in aliases)
 
         assert flag.names == correct_cases
-
-    @pytest.mark.parametrize(
-        "invalid_value", (" ", "   ", "|", "asd|", "|test", "|test|")
-    )
-    def test_empty_name_check(self, invalid_value):
-        # 不允许名称中出现 '|'，不允许出现空字符串
-        with pytest.raises(ValueError):
-            Flag(name=invalid_value)
-        with pytest.raises(ValueError):
-            Flag(aliases=invalid_value)
-        with pytest.raises(ValueError):
-            Flag(parents=invalid_value)
-
-    @pytest.mark.parametrize("value", ("|", "test|", "|test", "for|test"))
-    def test_delimiters_invalid_case(self, value):
-        with pytest.raises(ValueError):
-            Flag(name=value)
-
-    @pytest.mark.parametrize("parents", (True, False))
-    @pytest.mark.parametrize("aliases", (True, False))
-    @pytest.mark.parametrize(
-        "value", ("for|test", "aa|bb|cc", ("aa", "bb"), ("aa", "bb", "cc"))
-    )
-    def test_delimiters_valid_case(self, parents, aliases, value):
-        kwargs = {}
-        if parents:
-            kwargs["parents"] = value
-        if aliases:
-            kwargs["aliases"] = value
-
-        Flag(**kwargs)
 
     @pytest.mark.parametrize("name", (void, "test"))
     @pytest.mark.parametrize("parents", (void, "test", "aaa|bbb", ("aaa", "bbb")))
@@ -118,73 +145,48 @@ class TestFlag(object):
         with pytest.raises(AttributeError):
             setattr(Flag(), attr, "233")
 
-    @pytest.mark.parametrize("attr", ("parents", "aliases"))
-    @pytest.mark.parametrize(
-        "value",
-        [
-            "test",
-            " test ",
-            "test1|test2|test3" " test1 |test2 | test3",
-            ("test1", "test2", "test3"),
-            (" test1", "test2 ", " test3 "),
-        ],
-    )
-    def test_multi_father(self, attr, value):
-        item = Flag(**{attr: value})
-        if isinstance(value, str):
-            value = value.split("|")
+    @pytest.mark.parametrize("strict", (True, False))
+    def test_equals(self, strict):
+        flag = Flag(name="aaa", aliases="bbb|ccc", parents="ddd")
 
-        value = [p.strip() for p in value]
+        equals = partial(flag.equals, strict=strict)
 
-        assert set(getattr(item, attr)) == set(value)
-
-    @pytest.mark.parametrize("name", ("test", "test ", " test"))
-    @pytest.mark.parametrize(
-        "aliases",
-        ("test1", "test2 ", (" test1", "test2 "), "test1|test2", "test1 | test2"),
-    )
-    def test_equals(self, name, aliases):
-        item = Flag(name, aliases=aliases)
-        if isinstance(aliases, str):
-            aliases = aliases.split("|")
-        names = [name.strip()] + [p.strip() for p in aliases]
-        for name in names:
-            assert name == item
-        assert set(names) == set(item.names)
-
-    def test_not_equals(self):
-        item = Flag("test", aliases="test1|test2")
-        assert item != "test~"
-        assert item != Flag("test~")
+        assert equals(Flag(name="aaa", aliases="bbb|ccc", parents="ddd"))  # 与 strict 无关
+        # 使用了异或处理，当 strict 为 True，式子右边的值都应为 False，反之，右值都应为 True
+        # 也就是说**两边一定不相等**
+        assert strict != equals(Flag(name="aaa", aliases="bbb|ccc"))
+        assert strict != equals("aaa")
+        assert strict != equals("bbb")
+        assert strict != equals("ccc")
 
 
 class TestFlagGroup(object):
-    def test_construction_type_check(self):
-        FlagGroup()
+    def test_init(self, flags):
+        flag_group = FlagGroup()
+
+        assert len(flag_group.flags) == 0
+
+        flag_group = FlagGroup(flags)
+
+        assert flag_group.flags == set(flags.values())
+
+    def test_init_raise_type_error(self):
         with pytest.raises(TypeError):
             FlagGroup(eval("123"))
 
-    @pytest.mark.parametrize("value", ("test", "test|foo|bar"))
-    def test_len_magic_method(self, value):
-        with override_flag_registered(value) as all_flags:
-            flag_group = FlagGroup(all_flags)
-            assert len(flag_group) == len(all_flags)
+    def test_init_raise_value_error(self):
+        with pytest.raises(ValueError, match="unknown"):
+            FlagGroup("aaa")
+        with pytest.raises(ValueError, match="compatible"):
+            FlagGroup(Flag("aaa"))
 
-    @pytest.mark.parametrize("value", ("test", "test|foo|bar"))
-    def test_iter_magic_method(self, value):
-        with override_flag_registered(value) as all_flags:
-            flag_group = FlagGroup(all_flags)
-            assert set(flag_group) == set(all_flags)
-
-    def test_loop_check(self):
+    def test_check_loop(self):
         with pytest.raises(ValueError, match="aaa<-bbb<-aaa"):
-
             class _TestFlagGroup_0(FlagGroup):
                 aaa = Flag(parents="bbb")
                 bbb = Flag(parents="aaa")
 
         with pytest.raises(ValueError, match="aaa<-ccc<-bbb<-aaa"):
-
             class _TestFlagGroup_1(FlagGroup):
                 aaa = Flag(parents="bbb")
                 bbb = Flag(parents="ccc")
@@ -195,187 +197,184 @@ class TestFlagGroup(object):
         # - aaa<-ccc<-bbb<-aaa
         # 两种结果均是正确的，由于标志组采用集合进行内部实现，所以具体会抛出哪种成环结果并不确定，两种均有可能
         with pytest.raises(
-            ValueError, match=r"(?:bbb<-ccc<-bbb)|(?:aaa<-ccc<-bbb<-aaa)"
+                ValueError, match=r"(?:bbb<-ccc<-bbb)|(?:aaa<-ccc<-bbb<-aaa)"
         ):
-
             class _TestFlagGroup_2(FlagGroup):
                 aaa = Flag(parents="bbb")
                 bbb = Flag(parents="ccc")
                 ccc = Flag(parents="aaa|bbb")
 
-    @pytest.mark.parametrize("invalid_value", ("test", Flag("test")))
-    def test_incompatible_flag_item_check(self, invalid_value):
-        # 如果未找到抛出 ValueError
-        if isinstance(invalid_value, str):
-            with pytest.raises(ValueError):
-                FlagGroup(invalid_value)
-        elif isinstance(invalid_value, Flag):
-            with pytest.raises(ValueError):
-                FlagGroup().set(invalid_value)
+    def test_flags_property_readonly(self, flags):
+        flag_group = FlagGroup(flags)
+        backup = flag_group.flags.copy()
+        flag_group.flags.clear()
 
-    @pytest.mark.parametrize(
-        "set_style",
-        (
-            lambda flag_group, values: flag_group.set(values),
-            lambda flag_group, values: flag_group + values,
-            lambda flag_group, values: flag_group | values,
-        ),
-    )
-    @pytest.mark.parametrize(
-        "unset_style",
-        (lambda flag, values: flag.unset(values), lambda flag, values: flag - values),
-    )
-    @pytest.mark.parametrize("flag", _test_flag_tuple)
-    def test_set_and_unset(self, set_style, unset_style, flag):
-        with override_flag_registered(flag) as all_flags:
-            # 构造时指定
-            flag_group = FlagGroup(flag)
+        assert flag_group.flags == backup
 
-            for item in all_flags:
-                assert item in flag_group
+    @pytest.mark.parametrize("op", (and_, or_, xor))
+    def test_op(self, op, flags):
+        flag_group_0 = FlagGroup("aaa")
+        flag_group_1 = FlagGroup("aaa|bbb|ccc")
 
-            # 其他方法
-            flag_group = FlagGroup()
-            set_style(flag_group, flag)
+        new_flag_group = flag_group_0.__op__(flag_group_1, op)
 
-            for item in all_flags:
-                assert item in flag_group
+        assert flag_group_0 is not new_flag_group and flag_group_1 is not new_flag_group
 
-            unset_style(flag_group, flag)
+        assert new_flag_group.flags == op(
+            FlagGroup.to_flag_objs(flag_group_0.flags),
+            FlagGroup.to_flag_objs(flag_group_1.flags),
+        )
 
-            for item in all_flags:
-                assert item not in flag_group
+    def test_set(self, flags):
+        flag_group = FlagGroup()
 
-    @pytest.mark.parametrize("flag", _test_flag_tuple)
-    def test_any_and_all(self, flag):
-        with override_flag_registered(flag) as all_flags:
-            flag = FlagGroup(flag)
-            assert flag.all(all_flags)
-            for item in flag:
-                flag = FlagGroup(item)
-                assert flag.any(all_flags)
+        assert len(flag_group.flags) == 0
 
-    def test_conflict_items(self):
+        flag_group.set("aaa")
+
+        assert flag_group.flags == {flags["aaa"]}
+
+        flag_group.set("eee")
+
+        assert flag_group.flags == {flags[name] for name in ["aaa", "ddd", "eee"]}
+
+    def test_set_raise_value_error(self, flags):
+        flag_group = FlagGroup()
+
+        with pytest.raises(ValueError, match="unknown"):
+            flag_group.set("ggg")
+
+        with pytest.raises(ValueError, match="compatible"):
+            flag_group.set(Flag("ggg"))
+
+        with pytest.raises(ValueError, match="depends on"):
+            flag_group.set("eee", set_parent_flag_automatically=False)
+
+    def test_unset(self, flags):
+        flag_group = FlagGroup(flags)
+
+        assert flag_group.flags == set(flags.values())
+
+        flag_group.unset("aaa")
+
+        assert flags["aaa"] not in flag_group.flags
+
+        flag_group.unset("ddd", remove_all_children=True)
+
+        assert flag_group.flags == {flags["bbb"], flags["ccc"]}
+
+    def test_unset_raise_value_error(self, flags):
+        flag_group = FlagGroup(flags)
+
+        assert flag_group.flags == set(flags.values())
+
+        with pytest.raises(ValueError, match="depends on"):
+            flag_group.unset("ddd", remove_all_children=False)
+
+    def test_len_magic_method(self, flags):
+        flag_group = FlagGroup(flags)
+        assert len(flag_group) == len(flags)
+
+    def test_iter_magic_method(self, flags):
+        flag_group = FlagGroup(flags)
+
+        assert set(flag_group) == set(flags.values())
+
+    def test_contains_magic_method(self, flags):
+        flag_group = FlagGroup(flags)
+        for flag in flags.values():
+            assert flag in flag_group
+
+    def test_all(self, flags):
+        flag_group = FlagGroup("aaa|bbb|ccc")
+
+        assert flag_group.all("aaa")
+        assert not flag_group.all("aaa", strict=True)
+        assert not flag_group.all("aaa|eee")
+
+        flag_group = FlagGroup(flags)
+
+        for i in range(0, len(flags) + 1):
+            for fs in combinations(flags, i):
+                assert flag_group.all(fs)
+
+        assert flag_group.all(flags, strict=True)
+
+        for i in range(0, len(flags)):
+            for fs in combinations(flags, i):
+                assert not flag_group.all(fs, strict=True)
+
+    def test_all_raise_value_error(self):
+        flag_group = FlagGroup()
+
+        with pytest.raises(ValueError, match="compatible"):
+            flag_group.all([Flag("aaa")])
+
+        with pytest.raises(ValueError, match="unknown"):
+            flag_group.all("aaa")
+
+    def test_any(self, flags):
+        flag_group = FlagGroup("aaa|bbb|ccc")
+
+        assert flag_group.any("aaa")
+        assert flag_group.any("aaa|eee|fff")
+        for i in range(1, 3 + 1):
+            for group in combinations(["ddd", "eee", "fff"], i):
+                assert not flag_group.any(group)
+
+        flag_group = FlagGroup(flags)
+
+        for i in range(0, len(flags) + 1):
+            for fs in combinations(flags, i):
+                if not fs:
+                    assert not flag_group.any(fs)
+                else:
+                    assert flag_group.any(fs)
+
+    def test_any_raise_value_error(self):
+        flag_group = FlagGroup()
+
+        with pytest.raises(ValueError, match="compatible"):
+            flag_group.any([Flag("aaa")])
+
+        with pytest.raises(ValueError, match="unknown"):
+            flag_group.any("aaa")
+
+    def test_register(self):
+        FlagGroup.register([Flag("ggg")])
+        FlagGroup("ggg")
+
+    def test_register_raise_value_error(self, flags):
         with pytest.raises(ValueError, match="conflict"):
-            with override_flag_registered("test"):
-                FlagGroup.register({Flag("test")})
+            FlagGroup.register([Flag("aaa")])
 
-        with override_flag_registered("aaa"):
-            with pytest.raises(ValueError, match="conflict"):
-
-                class _TestFlagGroup(FlagGroup):
-                    aaa = Flag()
-                    bbb = Flag()
-
-            with pytest.raises(ValueError, match="conflict"):
-
-                class _TestFlagGroupAlias(FlagGroup):
-                    bbb = Flag(aliases="aaa")
-
-    @pytest.mark.parametrize("is_set", (None, True, False))
-    def test_emitter_set_or_not_set(self, is_set):
-        with override_flag_registered("test"):
-            flag = FlagGroup()
-
-            triggered = False
-
-            @flag.when("test", is_set=is_set, max_call_count=-1)
-            def for_test_closure():
-                nonlocal triggered
-                triggered = True
-
-            if is_set is None:
-                assert not triggered
-                flag.set_emit("test")
-                assert triggered
-                triggered = False
-                flag.unset_emit("test")
-                assert triggered
-                return
-
-            if is_set:
-                assert not triggered
-                flag.set_emit("test")
-                assert triggered
-                triggered = False
-                flag.unset_emit("test")
-                assert not triggered
-            else:
-                flag.set_emit("test")
-                assert not triggered
-                flag.unset_emit("test")
-                assert triggered
-
-    @pytest.mark.parametrize("max_call_count", (-1, 0, 1, 5))
-    def test_emitter_call_constraint(self, max_call_count):
-        with override_flag_registered("test"):
-            flag = FlagGroup()
-
-            trigger_counter = 0
-
-            @flag.when("test", max_call_count=max_call_count)
-            def for_test_closure():
-                nonlocal trigger_counter
-                trigger_counter += 1
-
-            if max_call_count == -1:
-                flag.set_emit("test")
-                assert trigger_counter == 1
-            else:
-                for _ in range(max_call_count):
-                    flag.set_emit("test")
-                assert trigger_counter == max_call_count
-
-    def test_emitter_call_with_arguments(self):
-        with override_flag_registered("test"):
-            flag = FlagGroup()
-
-            args = None
-            kwargs = None
-
-            @flag.when("test", is_set=None, max_call_count=-1)
-            def for_test_closure(*args_, **kwargs_):
-                nonlocal args
-                nonlocal kwargs
-                args = args_
-                kwargs = kwargs_
-
-            assert args is None and kwargs is None
-
-            flag.set_emit("test", 1, 2, 3, test="for_test")
-
-            assert args == (1, 2, 3)
-            assert kwargs == {"test": "for_test"}
-
-    def test_set_and_unset_under_multithreading(self):
-        with override_flag_registered("test"):
-            flag_group = FlagGroup()
-
-            def job(*args, **kwargs):
-                # 重复设置标志，重复取消标志都没问题，标志组里的每个标志都是唯一的，不会重复添加，也不会重复取消
-                for _ in range(3):
-                    flag_group.set("test")
-                for _ in range(2):
-                    flag_group.unset("test")
-
-            with ThreadPoolExecutor() as executor:
-                executor.map(job, range(5))
-
-            assert "test" not in flag_group
-
-    def test_set_and_unset_conflict(self):
-        flag_group = TaskFlagGroup(TaskFlagGroup.pending)
-
-        assert flag_group.has(TaskFlagGroup.pending)
-
-        with pytest.raises(ValueError, match="stopping"):
-            flag_group.set(TaskFlagGroup.stopping)
-
-    def test_parents_invalid_case(self):
-        with pytest.raises(ValueError, match="invalid"):
-
+        with pytest.raises(ValueError, match="conflict"):
             class _TestFlagGroup(FlagGroup):
-                aaa = Flag(parents="bbb")
+                aaa = Flag()
+                ggg = Flag()
+
+        with pytest.raises(ValueError, match="conflict"):
+            class _TestFlagGroupAlias(FlagGroup):
+                ggg = Flag(aliases="aaa")
+
+        with pytest.raises(ValueError, match="invalid"):
+            class _TestFlagGroupParents(FlagGroup):
+                ggg = Flag(parents="hhh")
+
+    def test_set_and_unset_under_multithreading(self, flags):
+        flag_group = FlagGroup()
+
+        def job(*args, **kwargs):
+            # 重复设置标志，重复取消标志都没问题，标志组里的每个标志都是唯一的，不会重复添加，也不会重复取消
+            for _ in range(3):
+                flag_group.set("aaa")
+            for _ in range(2):
+                flag_group.unset("aaa")
+
+        with ThreadPoolExecutor() as executor:
+            executor.map(job, range(5))
+
+        assert "aaa" not in flag_group
 
     def test_inherit_flag_group(self):
         class _TestFlagGroup(FlagGroup):
@@ -384,90 +383,113 @@ class TestFlagGroup(object):
 
         flag_group = _TestFlagGroup(("aaa", "bbb"))
 
-        assert flag_group.all(("aaa", "bbb"))
+        assert flag_group.flags == {_TestFlagGroup.aaa, _TestFlagGroup.bbb}
 
         class _TestFlagGroupEx(_TestFlagGroup):
             ccc = Flag()
 
         flag_group_ex = _TestFlagGroupEx(("aaa", "bbb", "ccc"))
 
-        assert flag_group_ex.all(("aaa", "bbb", "ccc"))
+        assert flag_group_ex.flags == {
+            _TestFlagGroupEx.aaa,
+            _TestFlagGroupEx.bbb,
+            _TestFlagGroupEx.ccc,
+        }
 
         class _TestFlagGroupEx2(_TestFlagGroup):
             ddd = Flag()
 
         flag_group_ex2 = _TestFlagGroupEx2(("aaa", "bbb", "ddd"))
 
-        assert flag_group_ex2.all(("aaa", "bbb", "ddd"))
+        assert flag_group_ex2.flags == {
+            _TestFlagGroupEx2.aaa,
+            _TestFlagGroupEx2.bbb,
+            _TestFlagGroupEx2.ddd,
+        }
 
-        flag_group += _TestFlagGroupEx.aaa
-        flag_group_ex += _TestFlagGroup.aaa
-        flag_group_ex2 += _TestFlagGroupEx2.aaa
+        flag_group.set(_TestFlagGroupEx.aaa)
+        flag_group_ex.set(_TestFlagGroup.aaa)
+        flag_group_ex2.set(_TestFlagGroupEx2.aaa)
 
         with pytest.raises(ValueError, match="compatible"):
-            flag_group += _TestFlagGroupEx.ccc
+            flag_group.set(_TestFlagGroupEx.ccc)
 
         with pytest.raises(ValueError, match="compatible"):
-            flag_group_ex2 += _TestFlagGroupEx.ccc
+            flag_group_ex2.set(_TestFlagGroupEx.ccc)
 
-    def test_set_auto_set_parents(self):
-        aaa = Flag(name="aaa")
-        bbb = Flag(name="bbb")
-        ccc = Flag(name="ccc", parents="aaa|bbb")
+    def test_copy(self, flags):
+        flag_group_0 = FlagGroup("aaa")
+        flag_group_1 = flag_group_0.copy()
+        assert flag_group_0 is not flag_group_1
+        assert flag_group_0.flags == flag_group_1.flags
 
-        with override_flag_registered(aaa, bbb, ccc):
-            flag_group = FlagGroup()
-            flag_group.set(ccc)
+    def test_equals(self, flags):
+        flag_group_0 = FlagGroup("aaa", emitter=BaseEventEmitter())
+        flag_group_1 = FlagGroup("aaa", emitter=BaseEventEmitter())
 
-            assert flag_group.all((aaa, bbb, ccc))
+        assert flag_group_0.equals(flag_group_1, strict=False)
+        assert not flag_group_0.equals(flag_group_1, strict=True)
 
-    def test_unset_auto_remove(self):
-        a = Flag("a", parents="d")
-        b = Flag("b", parents="d")
-        c = Flag("c", parents="d")
-        d = Flag("d", parents="e")
-        e = Flag("e")
+    def test_no_wait(self, flags):
+        flag_group = FlagGroup()
 
-        with override_flag_registered(a, b, c, d, e):
-            flag_group = FlagGroup("a|b|c|d|e")
-            assert flag_group.all((a, b, c, d, e))
+        def foo():
+            time.sleep(0.1)
+            flag_group.set("aaa")
+            assert flag_group.flags == {flags["aaa"]}
+            flag_group.no_wait("bbb")
+            assert flag_group.flags == {flags["aaa"], flags["bbb"]}
 
-            flag_group.unset(e, remove_all_children=True)
-            assert len(flag_group) == 0
+        def bar():
+            assert flag_group.flags == set()
+            flag_group.no_wait("aaa")
+            assert flag_group.flags == {flags["aaa"]}
+            time.sleep(0.1)
+            flag_group.set("bbb")
+            assert flag_group.flags == {flags["aaa"], flags["bbb"]}
 
-    def test_copy(self):
-        with override_flag_registered("test"):
-            flag_group_0 = FlagGroup("test")
-            flag_group_1 = flag_group_0.copy()
+        t1 = Thread(target=foo)
+        t2 = Thread(target=bar)
 
-            # TODO 考虑实现 FlagGroup 的相等比较
-            # assert flag_group_0 == flag_group_1
-
-            flag_group_1.has("test")
-
-    def test_get_event_by_flag(self):
-        with override_flag_registered("aaa|bbb"):
-
-            def foo():
-                time.sleep(0.1)
-                flag_group.set("aaa")
-                assert not flag_group.has("bbb")
-                flag_group.get_event_by_flag("bbb").wait()
-                assert flag_group.has("bbb")
-
-            def bar():
-                assert not flag_group.has("aaa")
-                flag_group.get_event_by_flag("aaa").wait()
-                assert flag_group.has("aaa")
-                time.sleep(0.1)
-                flag_group.set("bbb")
-
-            t1 = Thread(target=foo)
-            t2 = Thread(target=bar)
-
-            flag_group = FlagGroup()
-
+        with assert_time_cost(lambda t: t >= 0.2):
             t1.start()
             t2.start()
             t1.join()
             t2.join()
+
+    def test_wait(self, flags):
+        flag_group = FlagGroup("aaa|bbb")
+
+        def foo():
+            time.sleep(0.1)
+            flag_group.unset("aaa")
+            assert flag_group.flags == {flags["bbb"]}
+            flag_group.wait("bbb")
+            assert flag_group.flags == set()
+
+        def bar():
+            assert flag_group.flags == {flags["aaa"], flags["bbb"]}
+            flag_group.wait("aaa")
+            assert flag_group.flags == {flags["bbb"]}
+            time.sleep(0.1)
+            flag_group.unset("bbb")
+            assert flag_group.flags == set()
+
+        t1 = Thread(target=foo)
+        t2 = Thread(target=bar)
+
+        with assert_time_cost(lambda t: t >= 0.2):
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
+
+
+class TestTaskFlagGroup(object):
+    def test_set_and_unset_conflict(self):
+        flag_group = TaskFlagGroup(TaskFlagGroup.pending)
+
+        assert flag_group.has(TaskFlagGroup.pending)
+
+        with pytest.raises(ValueError, match="stopping"):
+            flag_group.set(TaskFlagGroup.stopping)

@@ -429,12 +429,9 @@ class TestFlagGroup(object):
         assert flag_group_0 is not flag_group_1
         assert flag_group_0.flags == flag_group_1.flags
 
-    def test_equals(self, flags):
-        flag_group_0 = FlagGroup("aaa", emitter=BaseEventEmitter())
-        flag_group_1 = FlagGroup("aaa", emitter=BaseEventEmitter())
-
-        assert flag_group_0.equals(flag_group_1, strict=False)
-        assert not flag_group_0.equals(flag_group_1, strict=True)
+    def test_equals_magic_method(self, flags):
+        assert FlagGroup("aaa") == FlagGroup("aaa")
+        assert FlagGroup("aaa") != FlagGroup("bbb")
 
     def test_wait_has_not(self, flags):
         flag_group = FlagGroup()

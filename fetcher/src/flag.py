@@ -15,9 +15,7 @@ from typing import (
     Union,
 )
 
-from pyee import BaseEventEmitter
-
-from .event import EmitterMixin, EventFactory
+from .event import Event, EventSystem, EventSystemMeta
 from .exceptions import TypeErrorEx
 from .utils import is_iterable, void
 
@@ -228,7 +226,7 @@ class Flag(object):
         return False
 
 
-class FlagGroupMeta(type):
+class FlagGroupMeta(EventSystemMeta):
     def __new__(mcs, name, bases, attrs, **kwargs):
         # 收集当前构造的类对象定义的标志
         cls_new_flags = []
@@ -265,7 +263,7 @@ class FlagGroupMeta(type):
 _flags_type = Union[str, Flag, Iterable[Union[str, Flag]]]
 
 
-class FlagGroup(EmitterMixin, metaclass=FlagGroupMeta):
+class FlagGroup(EventSystem, metaclass=FlagGroupMeta):
     """
     标志组类
     -------
@@ -282,22 +280,11 @@ class FlagGroup(EmitterMixin, metaclass=FlagGroupMeta):
 
     """
 
-    cls_emitter = BaseEventEmitter()
+    event_set = Event("set")
+    event_unset = Event("unset")
 
-    _event_ = EventFactory(cls_emitter)
-    # 正常状态下
-    # cls obj 上只有一个 emitter，有若干个与之关联的 Event，每个 Event 的名称应该不相同，如果相同将视为同一事件
-    # 对于这个 cls obj 的构造的每一个实例，都应该有一个自己的 emitter，
-    # 且有与 cls obj 相应的 Event，但每个 Event 除了关联自己这个实例上的 emitter 外，还与 cls obj 上的 emitter 相关联
-    event_set = _event_("set")
-    event_unset = _event_("unset")
-
-    def __init__(
-        self,
-        flags: Optional[_flags_type] = None,
-        emitter: Optional[BaseEventEmitter] = None,
-    ):
-        super().__init__(emitter)
+    def __init__(self, flags: Optional[_flags_type] = None):
+        super().__init__()
 
         self._cond = Condition()
         self._flags: Set[Flag] = set()
@@ -313,7 +300,10 @@ class FlagGroup(EmitterMixin, metaclass=FlagGroupMeta):
         return f"<{self.__class__.__name__} [{str(self)}]>"
 
     def __eq__(self, other):
-        return self.equals(other, strict=False)
+        if isinstance(other, FlagGroup):
+            return self._flags == other._flags
+
+        return False
 
     def __op__(
         self, other: "FlagGroup", op: Callable[[Set[Flag], Set[Flag]], "FlagGroup"]
@@ -339,22 +329,6 @@ class FlagGroup(EmitterMixin, metaclass=FlagGroupMeta):
 
     def __contains__(self, flag: Union[str, Flag]):
         return self.any([flag])
-
-    def equals(self, other, *, strict=True):
-        """
-        判断此标志组与指定对象是否相等
-
-        :param other: 指定对象
-        :param strict: 是否启用严格模式，如果启用，则除了比较两者的 flags 是否一致之外，还会检查两者的 emitter 是否相同
-        :return:
-        """
-        if isinstance(other, FlagGroup):
-            if strict:
-                return self._flags == other._flags and self._emitter == other._emitter
-            else:
-                return self._flags == other._flags
-
-        return False
 
     @classmethod
     def _check_flag_conflict(cls, flag: Flag):
@@ -635,7 +609,7 @@ class FlagGroup(EmitterMixin, metaclass=FlagGroupMeta):
                 with self._cond:
                     self._flags.add(flag)
                     self._cond.notify_all()
-                    self._emitter.emit("set", self, flag)
+                    self.event_set.emit("set", self, flag)
 
     def unset(self, flags: _flags_type, remove_all_children=True):
         """
@@ -663,7 +637,7 @@ class FlagGroup(EmitterMixin, metaclass=FlagGroupMeta):
                 with self._cond:
                     if flag in self._flags:  # 允许取消设置一个已经未设置的标志
                         self._flags.remove(flag)
-                        self._emitter.emit("unset", self, flag)
+                        self.event_unset.emit("unset", self, flag)
 
                     self._cond.notify_all()
 

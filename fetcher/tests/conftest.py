@@ -1,6 +1,8 @@
 #!/usr/env python3
 import pytest
+from pyee import BaseEventEmitter, AsyncIOEventEmitter
 
+from src.event import EventSystem, Event
 from src.flag import Flag, FlagGroup
 
 
@@ -30,3 +32,24 @@ def flags():
         # 恢复原注册项
         original_flags.clear()
         original_flags.update(original_flags_backup)
+
+
+@pytest.fixture(params=[None, BaseEventEmitter, AsyncIOEventEmitter])
+def event_system_case(request):
+    emitter_factory = request.param
+    if emitter_factory is not None:
+        emitter_factory = lambda: request.param()
+
+    class _ForTestClass(EventSystem, emitter_factory=emitter_factory):
+        aaa: Event
+        bbb = Event(name="bbb-new-name")
+
+    _for_test_obj = _ForTestClass()
+
+    yield _ForTestClass, _for_test_obj
+
+    del _for_test_obj
+    del _ForTestClass
+
+    # 重置 EventSystem 的 cls_emitter
+    EventSystem.cls_emitter = getattr(EventSystem, "_emitter_factory")()

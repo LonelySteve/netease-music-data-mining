@@ -63,33 +63,48 @@ class Config(object, metaclass=ConfigMeta):
     def _load(cls, file_path):
         fields = {
             # database
-            "database_type": lambda: cls._parser.get("database", "type", fallback="mongodb"),
-            "database_name": lambda: cls._parser.get("database", "name", fallback="nmdm-fetcher"),
-            "database_host": lambda: cls._parser.get("database", "host", fallback="127.0.0.1"),
-            "database_port": lambda: cls._parser.getint("database", "port", fallback="27017"),
+            "database_type": lambda: cls._parser.get(
+                "database", "type", fallback="mongodb"
+            ),
+            "database_name": lambda: cls._parser.get(
+                "database", "name", fallback="nmdm-fetcher"
+            ),
+            "database_host": lambda: cls._parser.get(
+                "database", "host", fallback="127.0.0.1"
+            ),
+            "database_port": lambda: cls._parser.getint(
+                "database", "port", fallback="27017"
+            ),
             "database_user": lambda: cls._parser.get("database", "user", fallback=None),
-            "database_password": lambda: cls._parser.get("database", "password", fallback=None),
-
+            "database_password": lambda: cls._parser.get(
+                "database", "password", fallback=None
+            ),
             # logger
             "logger_level": lambda: cls._parser.get("logger", "level", fallback="INFO"),
             "logger_log_file_path": lambda: cls._parser.get(
-                "logger", "log_file_path",
-                fallback="logs/fetcher.log"
+                "logger", "log_file_path", fallback="logs/fetcher.log"
             ),
             "logger_log_file_rollover_interval": lambda: cls._parser.get(
-                "logger",
-                "log_file_rollover_interval",
-                fallback="D"
+                "logger", "log_file_rollover_interval", fallback="D"
             ),
-            "logger_log_file_interval": lambda: cls._parser.getint("logger", "log_file_interval", fallback=1),
-            "logger_log_file_backup_count": lambda: cls._parser.getint("logger", "log_file_backup_count", fallback=0),
-            "logger_log_file_encoding": lambda: cls._parser.get("logger", "log_file_encoding", fallback="utf-8"),
+            "logger_log_file_interval": lambda: cls._parser.getint(
+                "logger", "log_file_interval", fallback=1
+            ),
+            "logger_log_file_backup_count": lambda: cls._parser.getint(
+                "logger", "log_file_backup_count", fallback=0
+            ),
+            "logger_log_file_encoding": lambda: cls._parser.get(
+                "logger", "log_file_encoding", fallback="utf-8"
+            ),
             "logger_format": lambda: cls._parser.get(
-                "logger", "format",
-                fallback="[%(asctime)s][%(name)s/%(threadName)s][%(levelname)s]: %(message)s"),
+                "logger",
+                "format",
+                fallback="[%(asctime)s][%(name)s/%(threadName)s][%(levelname)s]: %(message)s",
+            ),
             # api
-            "api_user_info_url": lambda: cls._parser.get("api", "user_info_url",
-                                                         fallback="http://127.0.0.1:3000/user/detail")
+            "api_user_info_url": lambda: cls._parser.get(
+                "api", "user_info_url", fallback="http://127.0.0.1:3000/user/detail"
+            ),
         }
         # 遍历加载
         for key, getter in fields.items():
@@ -97,15 +112,20 @@ class Config(object, metaclass=ConfigMeta):
                 setattr(cls, key, os.getenv(key.upper(), getter()))  # 环境变量值优先，配置文件值其后
             except Exception:
                 raise ConfigLoadError(
-                    file_path, f"An exception occurred while getting the value of field {key!r}")
+                    file_path,
+                    f"An exception occurred while getting the value of field {key!r}",
+                )
 
 
 def get_mongo_database():
     if "mongo" not in Config.database_type.lower():
         raise RuntimeError("MongoDB is not currently supported.")
 
-    user_pass = f"{quote_plus(Config.database_user)}:{quote_plus(Config.database_password)}@" \
-        if Config.database_user else ""
+    user_pass = (
+        f"{quote_plus(Config.database_user)}:{quote_plus(Config.database_password)}@"
+        if Config.database_user
+        else ""
+    )
 
     host_port = f"{quote_plus(Config.database_host)}:{Config.database_port}"
 
@@ -127,7 +147,7 @@ def get_logger(name: str) -> Logger:
         when=Config.logger_log_file_rollover_interval,
         interval=int(Config.logger_log_file_interval),
         backupCount=int(Config.logger_log_file_backup_count),
-        encoding=Config.logger_log_file_encoding
+        encoding=Config.logger_log_file_encoding,
     )
     handler.setFormatter(Formatter(Config.logger_format))
     logger.addHandler(handler)

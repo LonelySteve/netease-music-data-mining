@@ -45,13 +45,16 @@ class Span(object):
 
 
 class StepSpan(Span):
-    def __init__(self, begin: int, end: Optional[Union[int, float]] = None, step: int = 1):
+    def __init__(
+        self, begin: int, end: Optional[Union[int, float]] = None, step: int = 1
+    ):
         if end is None:
             end = math.copysign(float("inf"), step)
 
         if (begin < end and step <= 0) or (begin > end and step >= 0):
             raise ValueError(
-                f"The value of step ({step}) is not ensure to reach the end.")
+                f"The value of step ({step}) is not ensure to reach the end."
+            )
 
         self.step: int = int(step)
         super().__init__(begin, end)
@@ -72,7 +75,6 @@ class StepSpan(Span):
 
 
 class WorkSpan(StepSpan):
-
     def __init__(self, begin: int, end: Optional[int] = None, step: int = 1):
         self._worked_span: Optional[Span] = None
         self._current = None
@@ -85,7 +87,13 @@ class WorkSpan(StepSpan):
         return self.__dict__ == other.__dict__
 
     def __hash__(self):
-        return hash(self.begin) ^ hash(self.end) ^ hash(self.step) ^ hash(self.worked_span) ^ hash(self.current)
+        return (
+            hash(self.begin)
+            ^ hash(self.end)
+            ^ hash(self.step)
+            ^ hash(self.worked_span)
+            ^ hash(self.current)
+        )
 
     def __copy__(self):
         return WorkSpan(self.begin, self.end, self.step)

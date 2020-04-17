@@ -10,7 +10,6 @@ class IStatus(metaclass=ABCMeta):
 
 
 class IWorkStatus(IStatus):
-
     @property
     @abstractmethod
     def age(self):
@@ -18,7 +17,6 @@ class IWorkStatus(IStatus):
 
 
 class IProgressiveStatus(IWorkStatus):
-
     @property
     @abstractmethod
     def processed(self):

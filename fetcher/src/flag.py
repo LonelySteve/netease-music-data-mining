@@ -305,6 +305,9 @@ class FlagGroup(EventSystem, metaclass=FlagGroupMeta):
 
         return False
 
+    def __hash__(self):
+        return hash(self._flags)
+
     def __op__(
         self, other: "FlagGroup", op: Callable[[Set[Flag], Set[Flag]], "FlagGroup"]
     ):

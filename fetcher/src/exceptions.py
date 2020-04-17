@@ -40,9 +40,7 @@ class TypeErrorEx(TypeError):
         if len(self.supported_types) == 1:
             expect_hint = f"{self.supported_types[0]}"
         else:
-            expect_hint = (
-                f"{', '.join(str(item) for item in self.supported_types[:-1])} or {self.supported_types[1]}"
-            )
+            expect_hint = f"{', '.join(str(item) for item in self.supported_types[:-1])} or {self.supported_types[1]}"
 
         base = f"expect {expect_hint}, not {type(self.actual_value)}"
 

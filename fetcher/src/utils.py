@@ -1,4 +1,5 @@
 #!/usr/env python3
+import math
 import traceback
 from functools import partial
 from inspect import isfunction, isgenerator, ismethod
@@ -79,3 +80,6 @@ def is_iterable(obj):
         return True
     except TypeError:
         return False
+
+
+sign = partial(math.copysign, 1)

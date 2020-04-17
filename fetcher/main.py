@@ -9,7 +9,7 @@ from starlette.responses import RedirectResponse
 from src.config import Config, get_logger, get_mongo_database
 from src.exceptions import ExplicitlyStopHandlingError, UserNotFoundError
 from src.fetcher import IndexFetcher
-from src.flag import ThreadFlag
+from src.flag import ThreadFlagGroup
 from src.monitor import IndexFetcherMonitor
 from src.util import get_traceback_text
 
@@ -60,8 +60,9 @@ def monitor():
                 "effectiveAverageSpeed": job_status_data.effective_average_speed,
                 "remainingTime": job_status_data.remaining_time,
                 "age": job_status_data.age,
-            } for job_status_data in _monitor.monitored_jobs.values()
-        }
+            }
+            for job_status_data in _monitor.monitored_jobs.values()
+        },
     }
 
 
@@ -71,13 +72,22 @@ def fetcher_list():
 
 
 @app.get("/fetcher/new")
-def fetcher_new(begin: int, end: Optional[int] = Query(None), step: int = 1,
-                weights: Optional[List[Union[int, float]]] = Query(None)):
+def fetcher_new(
+    begin: int,
+    end: Optional[int] = Query(None),
+    step: int = 1,
+    weights: Optional[List[Union[int, float]]] = Query(None),
+):
     fetcher = IndexFetcher(
-        begin=begin, end=end, step=step, thread_weights=weights, name=f"Fetcher-{len(_fetchers)}"
+        begin=begin,
+        end=end,
+        step=step,
+        thread_weights=weights,
+        name=f"Fetcher-{len(_fetchers)}",
     )
 
     with requests.session() as session:
+
         @fetcher.handlers.add
         def scrape_user_info(i):
             r = session.get(Config.api_user_info_url, params={"uid": i})
@@ -89,7 +99,9 @@ def fetcher_new(begin: int, end: Optional[int] = Query(None), step: int = 1,
             if r.status_code != 200 or data["code"] != 200:
                 raise ExplicitlyStopHandlingError(f"{data}")
 
-            _db["user_info"].update_one({"userPoint.userId": i}, {"$set": data}, upsert=True)
+            _db["user_info"].update_one(
+                {"userPoint.userId": i}, {"$set": data}, upsert=True
+            )
 
     @fetcher.emitter.on("IndexJob.running")
     def on_running(sender):
@@ -113,7 +125,9 @@ def fetcher_new(begin: int, end: Optional[int] = Query(None), step: int = 1,
 
     @fetcher.emitter.on("IndexJob.handle_skipped")
     def on_handle_error(sender, err_info):
-        _logger.debug(f"工作遇到处理过程被跳过的作业：{sender}，导致跳过的出错堆栈：\n{get_traceback_text(*err_info)}")
+        _logger.debug(
+            f"工作遇到处理过程被跳过的作业：{sender}，导致跳过的出错堆栈：\n{get_traceback_text(*err_info)}"
+        )
 
     @fetcher.emitter.on("error")
     def on_error(err):
@@ -121,9 +135,7 @@ def fetcher_new(begin: int, end: Optional[int] = Query(None), step: int = 1,
 
     _fetchers.append(fetcher)
 
-    return {
-        "fid": fetcher.name
-    }
+    return {"fid": fetcher.name}
 
 
 def try_find_fetcher(fid):
@@ -138,9 +150,7 @@ def fetcher_start(fid: str):
     try:
         try_find_fetcher(fid).start()
     except Exception as e:
-        return {
-            "error": str(e)
-        }
+        return {"error": str(e)}
 
     return True
 
@@ -148,12 +158,10 @@ def fetcher_start(fid: str):
 @app.get("/fetcher/start_all")
 def fetcher_start_all():
     try:
-        for fetcher in (f for f in _fetchers if ThreadFlag.pending in f.flag):
+        for fetcher in (f for f in _fetchers if ThreadFlagGroup.pending in f.flag):
             fetcher.start()
     except Exception as e:
-        return {
-            "error": str(e)
-        }
+        return {"error": str(e)}
 
     return True
 
@@ -163,9 +171,7 @@ def fetcher_stop(fid: str):
     try:
         try_find_fetcher(fid).stop()
     except Exception as e:
-        return {
-            "error": str(e)
-        }
+        return {"error": str(e)}
 
     return True
 
@@ -176,9 +182,7 @@ def fetcher_stop_all():
         for fetcher in _fetchers:
             fetcher.stop()
     except Exception as e:
-        return {
-            "error": str(e)
-        }
+        return {"error": str(e)}
 
     return True
 
@@ -190,9 +194,7 @@ def fetcher_delete(fid: str):
         fetcher.stop()
         _fetchers.remove(fetcher)
     except Exception as e:
-        return {
-            "error": str(e)
-        }
+        return {"error": str(e)}
 
     return True
 
